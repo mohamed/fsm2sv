@@ -20,6 +20,3 @@ jobs:
 
     - name: Generate RTL
       run: make all
-
-    - name: Test RTL using SystemC Testbench
-      run: make test-sc
