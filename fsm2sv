@@ -1,0 +1,717 @@
+#!/usr/bin/env python3
+"""
+All rights reserved (C) 2021. Mohamed A. Bamakhrama.
+
+A tool to generate synthesizable SystemVerilog finite state machines from YAML
+specifications. The idea is to capture the FSM intent in a clear way that
+enables the designer to focus on *what* the FSM should do, and leave the code
+*details* to the tool. The tool then generates optimized SV RTL in a consistent
+style that helps the designer to achieve easier readability and debugability.
+The tool also generates a Graphviz dot visualization of the FSM that that can
+be used for visual documentation purposes.
+"""
+
+__version__ = "1.0"
+
+import io
+import sys
+import math
+import argparse
+import yaml
+
+INOUT_CHARS = ['(', ')', '<', '>']
+
+
+class VerilogTBVisitor:
+    """
+    Generates Verilog testbench
+    """
+    def __init__(self):
+        self.buf = io.StringIO()
+
+    def visit_fsm(self, fsm):
+        """Visit the FSM
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        dump("`timescale 1ns/1ps\n\n")
+        dump(f"module {fsm.name}_tb;\n\n")
+        dump("localparam integer PERIOD = 10;\n\n")
+        rst = "rst_ni" if fsm.rst_active_low else "rst_i"
+        dump(f"logic clk_i, {rst};\n")
+        dump("// inputs\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"logic [{inp.width-1}:0] {name};\n")
+        dump("\n")
+        dump("// outputs\n")
+        for name, out in fsm.outputs.items():
+            dump(f"wire [{out.width-1}:0] {name};\n")
+        dump("\n")
+        dump("integer i;\n\n")
+        dump("initial begin\n")
+        dump(f'  $dumpfile("{fsm.name}.vcd");\n')
+        dump(f'  $dumpvars(0, {fsm.name}_tb);\n')
+        dump("  clk_i = 0;\n")
+        rst_val = 0 if fsm.rst_active_low else 1
+        dump(f"  {rst} = {rst_val};\n")
+        rst_val = rst_val ^ 1
+        dump(f"  #(2*PERIOD) {rst} = {rst_val};\n")
+        self.generate_values(fsm)
+        dump("  $finish;\n")
+        dump("end\n\n")
+        dump("always begin\n")
+        dump("  #(PERIOD / 2) clk_i = !clk_i;\n")
+        dump("end\n\n")
+        dump(f"{fsm.name} dut (\n")
+        dump("  .clk_i(clk_i),\n")
+        dump(f"  .{rst}({rst}),\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"  .{name}({name}),\n")
+        for i, name in enumerate(fsm.outputs):
+            comma = "," if i < (len(fsm.outputs)-1) else ""
+            dump(f"  .{name}({name}){comma}\n")
+        dump(");\n\n")
+        dump("endmodule\n")
+
+    def generate_values(self, fsm):
+        """Generate simulation random values
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        dump("  for (i = 0; i < 10000; i++) begin\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"    {name} = $mti_random % {(2 ** inp.width)};\n")
+        dump("    #(PERIOD);\n")
+        dump("  end\n")
+
+
+class SystemCTBVisitor:
+    """
+    Generates Verilator SystemC testbench
+    """
+    def __init__(self):
+        self.buf = io.StringIO()
+        self.idx = 0
+
+    def tab(self):
+        """prints variable indentation
+        """
+        return "    " * self.idx
+
+    def get_port_type(self, width):     # pylint: disable=no-self-use
+        """Calculate Verilator port width
+        """
+        assert isinstance(width, int)
+        if width == 1:
+            return "bool"
+        if 1 < width <= 32:
+            return "uint32_t"
+        if 32 < width <= 64:
+            return "uint64_t"
+        return "sc_bv<" + str(width) + ">"
+
+    def visit_fsm(self, fsm):
+        """Visit the FSM
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        tab = self.tab
+        dump("#include <systemc.h>\n")
+        dump("#include <random>\n\n")
+        dump(f'#include "V{fsm.name}.h"\n')
+        dump('#include "verilated.h"\n')
+        dump('#include "verilated_vcd_sc.h"\n\n')
+        dump("int sc_main(int argc, char ** argv) {\n")
+        self.idx += 1
+        dump(f"{tab()}sc_time STEP(1, SC_NS);\n")
+        dump(f"{tab()}Verilated::commandArgs(argc, argv);\n")
+        dump(f'{tab()}V{fsm.name}* dut = new V{fsm.name}("dut");\n')
+        dump(f"{tab()}Verilated::traceEverOn(true);\n")
+        dump(f"{tab()}VerilatedVcdSc* tfp = new VerilatedVcdSc;\n")
+        dump(f"{tab()}dut->trace(tfp, 99);\n")
+        dump(f'{tab()}tfp->open("{fsm.name}.vcd");\n\n')
+        dump(f'{tab()}sc_clock clk("clk_i", STEP);\n')
+        rst = "rst_ni" if fsm.rst_active_low else "rst_i"
+        dump(f'{tab()}sc_signal<bool> rst("{rst}");\n\n')
+        dump(f"{tab()}// inputs\n")
+        for name, inp in fsm.inputs.items():
+            port_type = self.get_port_type(inp.width)
+            dump(f'{tab()}sc_signal<{port_type}> {name}("{name}");\n')
+        dump("\n")
+        dump(f"{tab()}// outputs\n")
+        for name, out in fsm.outputs.items():
+            port_type = self.get_port_type(out.width)
+            dump(f'{tab()}sc_signal<{port_type}> {name}("{name}");\n')
+        dump("\n")
+        dump(f"{tab()}dut->clk_i(clk);\n")
+        dump(f"{tab()}dut->{rst}(rst);\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"{tab()}dut->{name}({name});\n")
+        for name, out in fsm.outputs.items():
+            dump(f"{tab()}dut->{name}({name});\n")
+        dump("\n")
+        rst_val = 0 if fsm.rst_active_low else 1
+        dump(f"{tab()}rst = {rst_val}; sc_start(2 * STEP);\n")
+        rst_val = rst_val ^ 1
+        dump(f"{tab()}rst = {rst_val}; sc_start(STEP);\n\n")
+
+        self.generate_values(fsm)
+        dump(f'{tab()}printf("Simulation finished...");\n')
+        dump(f"{tab()}sc_stop();\n")
+        dump(f"{tab()}tfp->close();\n")
+        dump(f"{tab()}delete tfp;\n")
+        dump(f"{tab()}delete dut;\n\n")
+        dump(f"{tab()}return EXIT_SUCCESS;\n")
+        self.idx -= 1
+        dump("}\n")
+
+    def generate_values(self, fsm):
+        """Generate simulation random values
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        tab = self.tab
+        dump(f"{tab()}std::random_device rd;\n")
+        dump(f"{tab()}std::mt19937 gen(rd());\n")
+        dump(f"{tab()}using uid = std::uniform_int_distribution<>;\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"{tab()}uid distr_{name}(0, {(2 ** inp.width) - 1});\n")
+        dump("\n")
+        dump(f"{tab()}for (int i = 0; i < 1000; i++) {{\n")
+        self.idx += 1
+        for name, inp in fsm.inputs.items():
+            dump(f"{tab()}{name} = distr_{name}(gen);\n")
+        dump(f"{tab()}sc_start(STEP);\n")
+        self.idx -= 1
+        dump(f"{tab()}}}\n\n")
+
+
+class DotVisitor:   # pylint: disable=too-few-public-methods
+    """
+    Generates Graphviz dot file from an FSM object
+    """
+    def __init__(self):
+        self.buf = io.StringIO()
+
+    def visit_fsm(self, fsm):
+        """Visits the given FSM and serializes it to self.buf
+
+        Args:
+            fsm: The state machine object
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        dump(f"digraph {fsm.name} {{\n")
+        dump("  edge[splines=\"curved\"];\n\n")
+        for state, value in fsm.states.items():
+            label = f"{state}"
+            moore = ""
+            if value.moore_outputs:
+                moore += "\\n"
+                for out, val in value.moore_outputs.items():
+                    moore += f"{out}={val},"
+            label += moore
+            shape = "doublecircle" if state == fsm.initial_state else "circle"
+            dump(f"  {state}[label=\"{label}\",shape={shape}];\n")
+        dump("\n")
+        for trans in fsm.transitions:
+            dump(f"  {trans.src_state} -> {trans.dst_state}")
+            label = ""
+            if trans.condition is not None:
+                label = f"[label=\"{trans.condition}"
+            mealy = ""
+            if trans.mealy_outputs:
+                mealy = " / "
+                for out, val in trans.mealy_outputs.items():
+                    mealy += f"{out}={val},"
+            label += mealy
+            if trans.condition is not None:
+                label += "\"]"
+            dump(f"{label};\n")
+        dump("}")
+
+
+class SVVisitor:
+    """
+    Produces SystemVerilog module implementing the FSM
+    """
+    def __init__(self):
+        self.buf = io.StringIO()
+        self.idx = 0
+
+    def tab(self):
+        """prints variable indentation
+        """
+        return "  " * self.idx
+
+    def visit_fsm(self, fsm):   # pylint: disable=too-many-statements
+        """FSM main visitor
+
+        Args:
+            fsm: The FSM object
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        tab = self.tab
+        dump(f"{tab()}module {fsm.name} (\n")
+        self.idx += 1
+        dump(f"{tab()}// inputs\n")
+        for name, inp in fsm.inputs.items():
+            dump(f"{tab()}input  logic [{inp.width-1}:0]   {name},\n")
+        dump(f"{tab()}// outputs\n")
+        for name, outp in fsm.outputs.items():
+            dump(f"{tab()}output logic [{outp.width-1}:0]   {name},\n")
+        dump(f"{tab()}// clock and reset\n")
+        dump(f"{tab()}input  logic         clk_i,\n")
+        rst = "rst_ni" if fsm.rst_active_low else "rst_i"
+        rst_edge = "negedge" if fsm.rst_active_low else "posedge"
+        dump(f"{tab()}input  logic         {rst}\n")
+        self.idx -= 1
+        dump(f"{tab()});\n")
+        self.idx += 1
+        self.visit_states(fsm.states, fsm.encoding)
+        for name, outp in fsm.outputs.items():
+            if outp.reg:
+                dump(f"{tab()}logic [{outp.width-1}:0]")
+                dump(f" {name}_d, {name}_q;\n")
+        dump("\n")
+        for name, outp in fsm.outputs.items():
+            if outp.reg:
+                dump(f"{tab()}assign {name} = {name}_q;\n")
+        dump("\n")
+        dump(f"{tab()}always_ff @(posedge clk_i")
+        if not fsm.rst_async:
+            dump(") begin\n")
+        else:
+            dump(f", {rst_edge} {rst}) begin\n")
+        self.idx += 1
+        dump("`ifdef FORMAL\n")
+        dump(f"{tab()}// SV assertions\n")
+        self.visit_sva(fsm)
+        dump("`endif  // FORMAL\n")
+        reset_op = "!" if fsm.rst_active_low else ""
+        dump(f"{tab()}if ({reset_op}{rst}) begin\n")
+        self.idx += 1
+        dump(f"{tab()}state_q <= {fsm.initial_state};\n")
+        for outp, port_val in fsm.outputs.items():
+            if port_val.reg:
+                dump(f"{tab()}{outp}_q <= '0;\n")
+        self.idx -= 1
+        dump(f"{tab()}end else begin\n")
+        self.idx += 1
+        dump(f"{tab()}state_q <= state_d;\n")
+        for outp, port_val in fsm.outputs.items():
+            if port_val.reg:
+                dump(f"{tab()}{outp}_q <= {outp}_d;\n")
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+        dump("\n")
+        self.visit_transitions(fsm)
+        dump("endmodule\n")
+
+    def visit_states(self, states, encoding):
+        """
+        Visit states
+        """
+        assert isinstance(states, dict)
+        assert len(states)
+        dump = self.buf.write
+        tab = self.tab
+        num_states = math.ceil(math.log(len(states), 2))
+        num_states = num_states if encoding == "counter" else len(states)
+        dump("\n")
+        dump("`ifdef USE_ENUM_STATE\n")
+        dump(f"{tab()}typedef enum logic [{num_states-1}:0] {{\n")
+        self.idx += 1
+        for idx, (state, value) in enumerate(states.items()):
+            dump(f"{tab()}{state} = {num_states}'d{value.encoding}")
+            dump(",\n" if idx < (len(states) - 1) else "\n")
+        self.idx -= 1
+        dump(f"{tab()}}} state_t;\n")
+        dump("`else\n")
+        for state, value in states.items():
+            dump(f"{tab()}localparam logic [{num_states-1}:0]")
+            dump(f" {state} = {num_states}'d{value.encoding};\n")
+        dump(f"{tab()}typedef logic [{num_states-1}:0] state_t;\n")
+        dump("`endif  // USE_ENUM_STATE\n\n")
+        dump(f"{tab()}state_t state_d, state_q;\n")
+
+    def visit_transitions(self, fsm):
+        """
+        Visit transitions
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        tab = self.tab
+        dump(f"{tab()}always_comb begin\n")
+        self.idx += 1
+        dump(f"{tab()}// default values\n")
+        dump(f"{tab()}state_d = state_q;\n")
+        for outp, value in fsm.outputs.items():
+            src = outp + "_q" if value.reg else "'0"
+            dst = outp + "_d" if value.reg else outp
+            dump(f"{tab()}{dst} = {src};\n")
+        dump(f"{tab()}unique case (state_q)\n")
+        self.idx += 1
+        for state in fsm.states:
+            dump(f"{tab()}{state}: begin\n")
+            self.idx += 1
+            for moore, value in fsm.states[state].moore_outputs.items():
+                dst = moore + "_d" if fsm.outputs[moore].reg else moore
+                dump(f"{tab()}{dst} = {value};\n")
+            has_condition = False
+            for trans in fsm.transitions:
+                if trans.src_state == state:
+                    if not has_condition:
+                        if trans.condition is not None:
+                            dump(f"{tab()}if {trans.condition} begin\n")
+                            self.idx += 1
+                            has_condition = True
+                    else:
+                        if trans.condition is not None:
+                            dump(f" else if {trans.condition} begin\n")
+                            self.idx += 1
+                        else:
+                            dump(" else begin\n")
+                            self.idx += 1
+                    assert trans.dst_state in fsm.states
+                    dump(f"{tab()}state_d = {trans.dst_state};\n")
+                    if trans.mealy_outputs:
+                        for mealy, value in trans.mealy_outputs.items():
+                            reg = fsm.outputs[mealy].reg
+                            dst = mealy + "_d" if reg else mealy
+                            dump(f"{tab()}{dst} = {value};\n")
+                    if has_condition:
+                        self.idx -= 1
+                        dump(f"{tab()}end")
+            self.idx -= 1
+            dump(f"\n{tab()}end\n")
+        dump(f"{tab()}default: begin\n")
+        self.idx += 1
+        dump(f"{tab()}state_d = {fsm.initial_state};\n")
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+        self.idx -= 1
+        dump(f"{tab()}endcase\n")
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+
+    def visit_sva(self, fsm):
+        """SystemVerilog Assertions
+        """
+        assert isinstance(fsm, FSM)
+        dump = self.buf.write
+        tab = self.tab
+        dump(f"{tab()}default clocking\n")
+        self.idx += 1
+        dump(f"{tab()}formal_clock @(posedge clk_i);\n")
+        self.idx -= 1
+        dump(f"{tab()}endclocking\n")
+        rst = "!rst_ni" if fsm.rst_active_low else "rst_i"
+        dump(f"{tab()}default disable iff ({rst});\n")
+
+
+class Port:   # pylint: disable=too-few-public-methods
+    """
+    Base class for input/output ports
+    """
+    def __init__(self, name, width):
+        assert isinstance(name, str)
+        assert isinstance(width, int) and width > 0
+        self.name = name
+        self.width = width
+
+    def __repr__(self):
+        return f"Port {self.name} (width: {self.width})"
+
+
+class InPort(Port):   # pylint: disable=too-few-public-methods
+    """
+    Input port class
+    """
+    def __repr__(self):
+        return f"InPort {self.name} (width: {self.width})"
+
+
+class OutPort(Port):   # pylint: disable=too-few-public-methods
+    """
+    Output port class
+    """
+    def __init__(self, name, width, reg):
+        super().__init__(name, width)
+        assert reg is not None
+        self.reg = reg
+
+    def __repr__(self):
+        _ = f"OutPort {self.name} (width: {self.width}, reg: {self.reg})"
+        return _
+
+
+class State:   # pylint: disable=too-few-public-methods
+    """State class
+
+    Stores the state name, encoding, and a dict holding Moore's outputs
+    """
+    def __init__(self, name, encoding, moore_outputs):
+        assert isinstance(name, str)
+        assert isinstance(encoding, int) and encoding >= 0
+        assert isinstance(moore_outputs, dict)
+        self.name = name
+        self.encoding = encoding
+        self.moore_outputs = moore_outputs
+
+    def __repr__(self):
+        _ = f"State {self.name} (encoding: {self.encoding}, "
+        _ += f"moore_outputs = {self.moore_outputs})"
+        return _
+
+
+class Transition:
+    """Transition class
+
+    Represents a state transition. Stores the source and destination states,
+    the transition condition (if any), and a dict of Mealy outputs
+    """
+    def __init__(self, src_state, dst_state, condition, mealy_outputs):
+        assert isinstance(src_state, str)
+        assert isinstance(dst_state, str)
+        assert isinstance(condition, str) or condition is None
+        assert isinstance(mealy_outputs, dict)
+        self.src_state = src_state
+        self.dst_state = dst_state
+        self.condition = condition
+        self.mealy_outputs = mealy_outputs
+
+    def __eq__(self, other):
+        equal = self.condition == other.condition and \
+                self.src_state == other.src_state and \
+                self.dst_state == other.dst_state and \
+                self.mealy_outputs == other.mealy_outputs
+        return equal
+
+    def __lt__(self, other):
+        if self.condition is not None and other.condition is None:
+            return True
+        if self.condition is not None and other.condition is not None:
+            return self.condition < other.condition
+        return False
+
+    def __repr__(self):
+        _ = f"Transition from {self.src_state} to "
+        _ += f"{self.dst_state} (condition = \"{self.condition}\", "
+        _ += f"mealy_outputs = {self.mealy_outputs})"
+        return _
+
+
+class FSM:   # pylint: disable=too-many-instance-attributes
+    """
+    FSM class
+
+    Stores the FSM representation. Can be serialized into SystemVerilog
+    and/or Graphviz dot
+    """
+    def __init__(self, fsm):
+        assert isinstance(fsm, dict)
+        self.transitions = []
+        self.states = {}
+        self.inputs = {}
+        self.outputs = {}
+        self.name = fsm["name"]
+        self.handle_rst(fsm.get("reset", None))
+        self.handle_inputs(fsm.get("inputs", {}))
+        self.handle_outputs(fsm.get("outputs", {}))
+        self.encoding = fsm.get("encoding", "onehot")
+        self.handle_transitions(fsm.get("transitions", {}))
+        self.set_state_encoding()
+        assert fsm["initial_state"] in self.states
+        self.initial_state = fsm["initial_state"]
+        assert len(self.states) > 1
+        assert len(self.outputs) > 0
+
+    def handle_rst(self, rst):
+        """
+        Parse reset section
+        """
+        # Handle reset
+        assert rst is not None
+        self.rst_async = rst.get("asynchronous", True)
+        self.rst_active_low = rst.get("active_low", False)
+
+    def handle_inputs(self, inputs):
+        """
+        Parse inputs
+        """
+        for inport in inputs:
+            for key, val in inport.items():
+                port = InPort(key, val["width"])
+                self.inputs[key] = port
+
+    def handle_outputs(self, outputs):
+        """
+        Parse outputs
+        """
+        for outport in outputs:
+            for key, val in outport.items():
+                port = OutPort(key, val["width"], val["reg"])
+                self.outputs[key] = port
+
+    def set_state_encoding(self):
+        """
+        Set the encoding for each state
+        """
+        i = 0 if self.encoding == "counter" else 1
+        for _, value in self.states.items():
+            value.encoding = i
+            if self.encoding == "onehot":
+                i = i << 1
+            elif self.encoding == "counter":
+                i = i + 1
+            else:
+                raise Exception("invalid encoding method")
+        for state_x, val_x in self.states.items():
+            for state_y, val_y in self.states.items():
+                if state_x != state_y:
+                    assert val_x.encoding != val_y.encoding
+
+    def parse_output_line(self, line):
+        """
+        Parse output lines
+        """
+        assert isinstance(line, str)
+        assert line.startswith('<')
+        assert line.endswith('>')
+        stmts = line.strip('<>').split(";")
+        outputs = {}
+        for stmt in stmts:
+            outs = list(map(str.strip, stmt.split("=")))
+            assert len(outs) == 2
+            assert outs[0] in self.outputs
+            outputs[outs[0]] = outs[1]
+        return outputs
+
+    def handle_transitions(self, transitions):
+        """
+        Parse state transitions
+        """
+        assert transitions
+        # We initialize the states here with incrementing enocdings
+        # These enocdings will later be overwritten in set_state_encoding
+        idx = 0
+        for state in transitions:
+            for key, value in state.items():
+                assert key not in self.states
+                moore_outs = {}
+                has_direct_arc = False
+                for trans in value:
+                    elems = trans.split(',')
+                    assert 1 <= len(elems) <= 3
+                    elems = list(map(str.strip, elems))
+                    # Case 1: transition with (), STATE [, <>]
+                    if elems[0].startswith('('):
+                        assert 2 <= len(elems) <= 3
+                        assert elems[0].endswith(')')
+                        assert not elems[1].startswith(tuple(INOUT_CHARS))
+                        mealy = elems[2] if len(elems) == 3 else None
+                        mealy_outs = {}
+                        if mealy is not None:
+                            mealy_outs = self.parse_output_line(mealy)
+                        trans = Transition(key, elems[1], elems[0], mealy_outs)
+                        self.transitions.append(trans)
+                    # Case 2: Moore's output: <>
+                    elif elems[0].startswith('<'):
+                        assert len(elems) == 1
+                        moore_outs = self.parse_output_line(elems[0])
+                    # Case 3: transition with no input: just next state
+                    else:
+                        assert not has_direct_arc
+                        has_direct_arc = True
+                        assert len(elems) == 1
+                        assert not elems[0].startswith(tuple(INOUT_CHARS))
+                        trans = Transition(key, elems[0], None, {})
+                        self.transitions.append(trans)
+                self.states[key] = State(key, idx, moore_outs)
+            idx += 1
+        # We store the transitions based on their conditions to ensure
+        # correct generation of the if/else if/else block.
+        # The condition-less arcs must be at the end of the list after
+        # all the arcs with conditions
+        self.transitions.sort()
+
+    def accept(self, visitor):
+        """
+        Accept a visitor
+        """
+        assert isinstance(visitor,
+                          (SVVisitor, DotVisitor,
+                           SystemCTBVisitor, VerilogTBVisitor))
+        visitor.visit_fsm(self)
+
+    def __repr__(self):
+        _ = f" -- FSM: {self.name}\n"
+        _ += f" -- Reset: async = {self.rst_async}, "
+        _ += f"active_low = {self.rst_active_low}\n"
+        _ += f" -- Inputs: {self.inputs}\n"
+        _ += f" -- Outputs: {self.outputs}\n"
+        _ += f" -- Initial State: {self.initial_state}\n"
+        _ += f" -- Transitions: {self.transitions}\n"
+        return _
+
+
+def main():
+    """
+    main function of the tool
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-i", metavar="fsm.yaml", type=str, required=True,
+                        help="Input FSM YAML description")
+    parser.add_argument("-o", metavar="fsm.sv", type=str,
+                        help="Generate SystemVerilog implementation")
+    parser.add_argument("-d", metavar="fsm.dot", type=str,
+                        help="Generate Graphviz dot file")
+    parser.add_argument("-t", nargs=2, type=str, metavar=('type', 'outfile'),
+                        help="Generate testbench. type is 'sc' or 'sv'")
+    parser.add_argument('--version', action='version',
+                        version='%(prog)s ' + __version__)
+    args = parser.parse_args()
+
+    if not args.o and not args.d and not args.t:
+        sys.exit("Error: must specify at least -o, -d, or -t!")
+    if args.t:
+        assert len(args.t) == 2
+
+    with open(args.i, 'r', encoding='utf-8') as stream:
+        try:
+            fsm_yml = yaml.safe_load(stream)
+            fsm = FSM(fsm_yml)
+            if args.o:
+                visitor = SVVisitor()
+                fsm.accept(visitor)
+                with open(args.o, 'w', encoding='utf-8') as outf:
+                    outf.write(visitor.buf.getvalue())
+                    visitor.buf.close()
+            if args.d:
+                visitor = DotVisitor()
+                fsm.accept(visitor)
+                with open(args.d, 'w', encoding='utf-8') as dotf:
+                    dotf.write(visitor.buf.getvalue())
+                    visitor.buf.close()
+            if args.t:
+                if args.t[0] == 'sc':
+                    visitor = SystemCTBVisitor()
+                if args.t[0] == 'sv':
+                    visitor = VerilogTBVisitor()
+                fsm.accept(visitor)
+                with open(args.t[1], 'w', encoding='utf-8') as tbf:
+                    tbf.write(visitor.buf.getvalue())
+                    visitor.buf.close()
+        except yaml.YAMLError as exc:
+            sys.exit(exc)
+        except IOError as exc:
+            sys.exit(exc)
+
+
+if __name__ == "__main__":
+    main()
+    sys.exit(0)

@@ -1,0 +1,87 @@
+---
+name: example5
+reset:
+  asynchronous: false
+  active_low: false
+inputs:
+  - in:
+      width: 8
+outputs:
+  - out:
+      width: 8
+      reg: false
+transitions:
+  - S0:
+    - (in == '0), S0
+    - (in < 4), S1
+    - (in < 32), S2
+    - (in < 64), S3
+    - S4
+    - <out = 8'h00>
+  - S1:
+    - (in[0] && in[1]), S0
+    - S3
+    - <out = 8'h06>
+  - S2:
+    - S3
+    - <out = 8'h18>
+  - S3:
+    - S5
+    - <out = 8'h60>
+  - S4:
+    - (in[0] || in[2] || in[4]), S5
+    - S6
+    - <out = 8'h80>
+  - S5:
+    - (!in[0]), S5
+    - S7
+    - <out = 8'hF0>
+  - S6:
+    - (in[7:6] == 2'b00), S6
+    - (in[7:6] == 2'b01), S8
+    - (in[7:6] == 2'b10), S9
+    - (in[7:6] == 2'b11), S1
+    - <out = 8'h1F>
+  - S7:
+    - (in[7:6] == 2'b00), S3
+    - (in[7:6] == 2'b01 || in[7:6] == 2'b10), S7
+    - (in[7:6] == 2'b11), S4
+    - <out = 8'h3F>
+  - S8:
+    - (in[4] ^ in[5]), S11
+    - (in[7]), S1
+    - S8
+    - <out = 8'h7F>
+  - S9:
+    - S11
+    - (!in[0]), S9
+    - <out = 8'hFF>
+  - S10:
+    - S1
+    - <out = 8'hFF>
+  - S11:
+    - (in == 64), S15
+    - S8
+    - <out = 8'hFF>
+  - S12:
+    - (in == 255), S0
+    - S12
+    - <out = 8'hFD>
+  - S13:
+    - (in[5] ^ in[3] ^ in[1]), S12
+    - S14
+    - <out = 8'hF7>
+  - S14:
+    - (in == 0), S14
+    - (in < 64), S12
+    - S10
+    - <out = 8'hDF>
+  - S15:
+    - (!in[7]), S15
+    - (in[1:0] == 2'b00), S14
+    - (in[1:0] == 2'b01), S10
+    - (in[1:0] == 2'b10), S13
+    - (in[1:0] == 2'b11), S0
+    - <out = 8'h7F>
+initial_state: S0
+encoding: counter

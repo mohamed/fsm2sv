@@ -1,0 +1,49 @@
+---
+name: example3
+reset:
+  asynchronous: false
+  active_low: true
+inputs:
+  - jmp:
+      width: 1
+  - go:
+      width: 1
+outputs:
+  - y1:
+      width: 1
+      reg: true
+transitions:
+  - S0:
+    - (!go), S0
+    - (jmp), S3
+    - S1
+  - S1:
+    - (jmp), S3
+    - S2
+  - S2:
+    - S3
+    - <y1 = 1'b1>
+  - S3:
+    - (jmp), S3
+    - S4
+    - <y1 = 1'b1>
+  - S4:
+    - (jmp), S3
+    - S5
+  - S5:
+    - (jmp), S3
+    - S6
+  - S6:
+    - (jmp), S3
+    - S7
+  - S7:
+    - (jmp), S3
+    - S8
+  - S8:
+    - (jmp), S3
+    - S9
+  - S9:
+    - S0
+    - (jmp), S3
+initial_state: S0
+encoding: onehot # or "counter"

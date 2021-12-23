@@ -1,0 +1,28 @@
+---
+name: example2
+reset:
+  asynchronous: true
+  active_low: true
+inputs:
+  - in0:
+      width: 2
+  - in1:
+      width: 1
+outputs:
+  - out0:
+      width: 1
+      reg: false
+  - out1:
+      width: 2
+      reg: true
+  - out2:
+      width: 4
+      reg: false
+transitions:
+  - IDLE:
+    - (in0 == 2'h1 && in1 == 1'h0), STATE0, <out0 = 1'h1; out1 = 2'h1>
+    - <out2 = 4'h2>
+  - STATE0:
+    - (in0 == 2'h0 && in1 == 1'h1), IDLE, <out1 = 2'h2>
+initial_state: IDLE
+encoding: onehot # or "counter"

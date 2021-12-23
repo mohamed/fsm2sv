@@ -1,0 +1,34 @@
+---
+name: example1
+reset:
+  asynchronous: true
+  active_low: true
+inputs:
+  - dly:
+      width: 1
+  - done:
+      width: 1
+  - req:
+      width: 1
+outputs:
+  - gnt:
+      width: 1
+      reg: false
+transitions:
+  - BIDLE:
+    - (req), BBUSY
+    - BIDLE
+  - BBUSY:
+    - (dly && done), BWAIT
+    - BBUSY
+    - (!dly && done), BFREE
+    - <gnt = 1'b1>
+  - BWAIT:
+    - (!dly), BFREE
+    - BWAIT
+    - <gnt = 1'b1>
+  - BFREE:
+    - BIDLE
+    - (req), BBUSY
+initial_state: BIDLE
+encoding: onehot # or "counter"
