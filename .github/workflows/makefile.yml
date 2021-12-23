@@ -1,0 +1,28 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install dependencies
+      run: |
+        sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz
+      
+    - name: Generate RTL
+      run: make all
+    
+    - name: Test RTL using SystemVerilog Testbench
+      run: make test-sv
+      
+    - name: Test RTL using SystemC Testbench
+      run: make test-sc
