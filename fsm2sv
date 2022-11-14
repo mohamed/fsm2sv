@@ -221,10 +221,14 @@ class DotVisitor:   # pylint: disable=too-few-public-methods
                 label = f"[label=\"{trans.condition}"
             mealy = ""
             if trans.mealy_outputs:
+                if trans.condition is None:
+                    label = f"[label=\""
                 mealy = " / "
                 for out, val in trans.mealy_outputs.items():
                     mealy += f"{out}={val},"
             label += mealy
+            if (trans.condition is None) and (trans.mealy_outputs):
+                label += "\"]"
             if trans.condition is not None:
                 label += "\"]"
             dump(f"{label};\n")
@@ -627,9 +631,14 @@ class FSM:   # pylint: disable=too-many-instance-attributes
                     else:
                         assert not has_direct_arc
                         has_direct_arc = True
-                        assert len(elems) == 1
+                        mealy = elems[1] if len(elems) == 2 else None
+                        mealy_outs = {}
+                        if mealy is not None:
+                            mealy_outs = self.parse_output_line(mealy)
+                        else:
+                            assert len(elems) == 1 
                         assert not elems[0].startswith(tuple(INOUT_CHARS))
-                        trans = Transition(key, elems[0], None, {})
+                        trans = Transition(key, elems[0], None, mealy_outs)
                         self.transitions.append(trans)
                 self.states[key] = State(key, idx, moore_outs)
             idx += 1
