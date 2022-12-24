@@ -1,5 +1,5 @@
 fsm2sv
-======
+=======
 
 [![Makefile CI](https://github.com/mohamed/fsm2sv/actions/workflows/makefile.yml/badge.svg)](https://github.com/mohamed/fsm2sv/actions/workflows/makefile.yml)
 
