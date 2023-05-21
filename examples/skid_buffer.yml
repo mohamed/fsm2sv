@@ -1,0 +1,43 @@
+---
+name: skid_buffer
+reset:
+  asynchronous: true
+  active_low: true
+inputs:
+  - V_l:
+      width: 1
+  - S_r:
+      width: 1
+outputs:
+  - S_l:
+      width: 1
+      reg: false
+  - V_r:
+      width: 1
+      reg: false
+  - E_m:
+      width: 1
+      reg: false
+  - E_s:
+      width: 1
+      reg: false
+transitions:
+  - EMPTY:
+    - (V_l), HALF, <E_m = 1'b1; E_s = 1'b1>
+    - (!V_l), EMPTY
+    - EMPTY
+    - <V_r = 1'b0; S_l = 1'b0>
+  - HALF:
+    - (V_l && !S_r), HALF, <E_m = 1'b1; E_s = 1'b1>
+    - (V_l && S_r), FULL, <E_m = 1'b1>
+    - (!V_l && S_r), HALF
+    - (!V_l && !S_r), EMPTY
+    - HALF
+    - <V_r = 1'b1; S_l = 1'b0>
+  - FULL:
+    - (!S_r), HALF, <E_s = 1'b1>
+    - (S_r), FULL
+    - FULL
+    - <V_r = 1'b1; S_l = 1'b1>
+initial_state: EMPTY
+encoding: counter # or "counter"
