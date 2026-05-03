@@ -34,9 +34,12 @@ PDF_OPTS := --fail-if-warnings \
 	-V geometry:margin=2cm \
 	--pdf-engine=pdflatex
 
-.PHONY: clean all flake pylint sizes test-sv test-sc docs
+.PHONY: clean all flake pylint sizes test-sv test-sc docs setup
 
 all: $(SV_OUTS) $(DOT_OUTS) $(SVTB_OUTS) $(SCTB_OUTS)
+
+setup:
+	uv sync --extra dev
 
 test-sv: $(SIMV_OUTS)
 
@@ -53,25 +56,25 @@ obj_dir/V%: $(EXAMPLES_DIR)/%_tb.cc $(EXAMPLES_DIR)/%.sv
 # Generate the SV FSM and validate it with verilator linter
 # To use another linter, just change $(LINT) and $(LINT_ARGS) above
 %.sv : %.yml
-	$(FSM2SV) -i $< -o $@
+	uv run $(FSM2SV) -i $< -o $@
 	$(VERILATOR) $(LINT_ARGS) $@
 
 # dot will print the file with layout attributes to stdout
 %.dot : %.yml
-	$(FSM2SV) -i $< -d $@
+	uv run $(FSM2SV) -i $< -d $@
 	dot -Tdot $@ > /dev/null
 
 %_tb.cc : %.yml
-	$(FSM2SV) -i $< -t sc $@
+	uv run $(FSM2SV) -i $< -t sc $@
 
 %_tb.v : %.yml
-	$(FSM2SV) -i $< -t sv $@
+	uv run $(FSM2SV) -i $< -t sv $@
 
 flake: $(FSM2SV)
-	flake8 $<
+	uv run flake8 $<
 
 pylint: $(FSM2SV)
-	pylint $<
+	uv run pylint $<
 
 docs: README.md
 	pandoc $(PDF_OPTS) -t latex $< -o docs/fsm2sv.pdf

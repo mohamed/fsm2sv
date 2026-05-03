@@ -1,0 +1,14 @@
+[project]
+name = "fsm2sv"
+version = "1.0"
+description = "Generate synthesizable SystemVerilog FSMs from YAML specifications"
+requires-python = ">=3.8"
+dependencies = [
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "flake8",
+    "pylint",
+]
