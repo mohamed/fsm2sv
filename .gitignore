@@ -8,3 +8,4 @@ docs/*.pdf
 *.vcd
 obj_dir
 .ccls-cache
+.venv

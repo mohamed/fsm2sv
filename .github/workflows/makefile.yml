@@ -14,9 +14,12 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+
     - name: Install dependencies
       run: |
         sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz
 
     - name: Generate RTL
-      run: make all
+      run: make setup all
