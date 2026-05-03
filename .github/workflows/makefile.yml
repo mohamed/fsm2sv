@@ -23,3 +23,12 @@ jobs:
 
     - name: Generate RTL
       run: make setup all
+
+    - name: Install pandoc and typst
+      run: |
+        sudo apt install pandoc
+        curl -fsSL https://github.com/typst/typst/releases/latest/download/typst-x86_64-unknown-linux-musl.tar.xz \
+          | sudo tar -xJ --strip-components=1 -C /usr/local/bin typst-x86_64-unknown-linux-musl/typst
+
+    - name: Generate PDF documentation
+      run: make docs

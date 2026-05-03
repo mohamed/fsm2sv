@@ -1,4 +1,5 @@
 ---
+version: "1.0"
 name: skid_buffer
 reset:
   asynchronous: true

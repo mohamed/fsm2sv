@@ -512,8 +512,17 @@ class FSM:   # pylint: disable=too-many-instance-attributes
     Stores the FSM representation. Can be serialized into SystemVerilog
     and/or Graphviz dot
     """
+    SCHEMA_VERSION = "1.0"
+
     def __init__(self, fsm):
         assert isinstance(fsm, dict)
+        if "version" not in fsm:
+            raise ValueError("Missing required 'version' field in YAML schema")
+        if str(fsm["version"]) != self.SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported schema version '{fsm['version']}'. "
+                f"Expected '{self.SCHEMA_VERSION}'"
+            )
         self.transitions = []
         self.states = {}
         self.inputs = {}
