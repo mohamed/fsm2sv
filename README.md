@@ -34,15 +34,20 @@ Requirements
 ------------
 
 `fsm2sv` is written using Python 3. It is tested using Python 3.8 and 3.10.
-All the used modules are part of Python's standard library except for `yaml`.
-If it is not present on your system, you can install it as follows:
+Python dependencies (`pyyaml`, `flake8`, `pylint`) are managed via
+[uv](https://github.com/astral-sh/uv). Once `uv` is installed, bootstrap the
+environment with:
 
   ```
-  pip install pyyaml
+  make setup
   ```
+
+This runs `uv sync --extra dev` and creates a local `.venv` with all required
+packages. No global Python package installation is needed.
 
 In addition to Python, the following tools are needed:
 
+  - [uv](https://github.com/astral-sh/uv): Used to manage Python dependencies.
   - [Verilator](https://verilator.org/): Used to perform linter checks.
     Tested with version 4.214
   - [Icarus Verilog](https://github.com/steveicarus/iverilog): Used to simulate
@@ -52,7 +57,7 @@ In addition to Python, the following tools are needed:
   - [Graphviz dot](https://graphviz.org/): Used to generate the FSM
     visualization
   - [flake8](https://flake8.pycqa.org/en/latest/) and [pylint](https://pylint.org/):
-    Used to lint `fsm2sv` sources.
+    Used to lint `fsm2sv` sources. Installed automatically via `make setup`.
 
 
 YAML Specification
