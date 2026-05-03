@@ -9,3 +9,4 @@ docs/*.pdf
 obj_dir
 .ccls-cache
 .venv
+uv.lock

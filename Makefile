@@ -22,17 +22,7 @@ TESTBENCH_ARGS = -Wall --sc --exe --trace -O3 -build --clk clk
 IVERILOG       = iverilog
 IVERILOG_ARGS  = -g2012 -Wall
 
-PDF_OPTS := --fail-if-warnings \
-	-V linkcolor:blue \
-	-V citecolor:blue \
-	--filter pandoc-secnos \
-	--filter pandoc-xnos \
-	--citeproc \
-	-V fontsize=11pt \
-	-V fontfamily=times \
-	-V geometry:a4paper \
-	-V geometry:margin=2cm \
-	--pdf-engine=pdflatex
+PDF_OPTS := --pdf-engine=typst
 
 .PHONY: clean all flake pylint sizes test-sv test-sc docs setup
 
@@ -77,7 +67,7 @@ pylint: $(FSM2SV)
 	uv run pylint $<
 
 docs: README.md
-	pandoc $(PDF_OPTS) -t latex $< -o docs/fsm2sv.pdf
+	pandoc $(PDF_OPTS) -t typst $< -o docs/fsm2sv.pdf
 
 sizes:
 	@echo "YML files total size = $(YML_SIZE)"
