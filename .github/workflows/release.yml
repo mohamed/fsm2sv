@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz pandoc fonts-liberation
+        curl -fsSL https://github.com/typst/typst/releases/latest/download/typst-x86_64-unknown-linux-musl.tar.xz \
+          | sudo tar -xJ --strip-components=1 -C /usr/local/bin typst-x86_64-unknown-linux-musl/typst
+
+    - name: Generate RTL
+      run: make setup all
+
+    - name: Generate PDF documentation
+      run: make docs
+
+    - name: Package examples
+      run: zip -r examples.zip examples/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          fsm2sv
+          LICENSE
+          README.md
+          examples.zip
+          docs/fsm2sv.pdf
