@@ -67,7 +67,7 @@ pylint: $(FSM2SV)
 	uv run pylint $<
 
 docs: README.md
-	pandoc $(PDF_OPTS) -t typst $< -o docs/fsm2sv.pdf
+	pandoc $< -t typst -o docs/fsm2sv.pdf
 
 sizes:
 	@echo "YML files total size = $(YML_SIZE)"
