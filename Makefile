@@ -22,7 +22,7 @@ TESTBENCH_ARGS = -Wall --sc --exe --trace -O3 -build --clk clk
 IVERILOG       = iverilog
 IVERILOG_ARGS  = -g2012 -Wall
 
-PDF_OPTS := --pdf-engine=typst
+PDF_OPTS := --pdf-engine=typst --pdf-engine-opt=--allow-net
 
 .PHONY: clean all flake pylint sizes test-sv test-sc docs setup
 
