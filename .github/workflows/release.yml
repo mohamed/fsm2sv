@@ -21,7 +21,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz pandoc
+        sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz pandoc fonts-liberation
         curl -fsSL https://github.com/typst/typst/releases/latest/download/typst-x86_64-unknown-linux-musl.tar.xz \
           | sudo tar -xJ --strip-components=1 -C /usr/local/bin typst-x86_64-unknown-linux-musl/typst
 
