@@ -22,7 +22,7 @@ TESTBENCH_ARGS = -Wall --sc --exe --trace -O3 -build --clk clk
 IVERILOG       = iverilog
 IVERILOG_ARGS  = -g2012 -Wall
 
-PDF_OPTS := --pdf-engine=typst --pdf-engine-opt=--allow-net
+PDF_OPTS := --pdf-engine=typst
 
 .PHONY: clean all flake pylint sizes test-sv test-sc docs setup
 
@@ -67,7 +67,7 @@ pylint: $(FSM2SV)
 	uv run pylint $<
 
 docs: README.md
-	pandoc $(PDF_OPTS) -t typst $< -o docs/fsm2sv.pdf
+	sed 's/!\[[^]]*\](https:[^)]*\)//g' $< | pandoc $(PDF_OPTS) -t typst -o docs/fsm2sv.pdf
 
 sizes:
 	@echo "YML files total size = $(YML_SIZE)"
