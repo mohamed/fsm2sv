@@ -32,7 +32,7 @@ Requirements
 ------------
 
 `fsm2sv` is written using Python 3. It is tested using Python 3.8 and 3.10.
-Python dependencies (`pyyaml`, `flake8`, `pylint`) are managed via
+Python dependencies (`pyyaml`, `jsonschema`, `flake8`, `pylint`) are managed via
 [uv](https://github.com/astral-sh/uv). Once `uv` is installed, bootstrap the
 environment with:
 
@@ -61,7 +61,7 @@ In addition to Python, the following tools are needed:
 YAML Specification
 ------------------
 
-The YAML consists of four maps and three scalars.
+The YAML consists of four maps and four scalars.
 The maps are:
 
   - `reset`: defines the properties of the reset signal such as polarity
@@ -156,6 +156,8 @@ The maps are:
 
 The scalars in the YAML specification are:
 
+  - `version`: A string that defines the YAML schema version.
+    The current supported version is `1.0`.
   - `name`: A string that defines the FSM name. Used to name the SV module
     and the file.
   - `initial_state`: A string that defines the name of the initial state.
@@ -163,6 +165,20 @@ The scalars in the YAML specification are:
   - `encoding`: A string that defines the encoding scheme of the states.
     At the moment, it can be either
     `counter` or `onehot`
+
+
+Schema Validation
+-----------------
+
+`fsm2sv` validates the input YAML before RTL generation using two layers:
+
+  1. **Draft 2020-12 structural validation** using the schema file
+     `fsm2sv_schema.yml`.
+  2. **Semantic validation** in the internal `FSMValidator` class for rules
+     that are not directly expressible in JSON Schema.
+
+The schema file `fsm2sv_schema.yml` is included in the repository and
+published as a release asset.
 
 
 ### Coding Style
@@ -219,6 +235,7 @@ An example YAML specification looks as follows:
 
 ```
 ---
+version: "1.0"
 name: example1       # FSM name
 
 reset:               # reset signal map
@@ -364,11 +381,17 @@ The generation-time checks are done on the YAML specification, while the
 simulation-time checks are done on the generated SV code.
 Currently, the tool implements the following generation-time checks:
 
-  - Ensure that `next_state` values are defined in the `transitions`
-    dict
+  - Input YAML shape and types against `fsm2sv_schema.yml`
+    (Draft 2020-12 JSON Schema)
+  - `version` matches the supported schema version (`1.0`)
+  - Exactly zero or one direct transition (`next_state`) per state
+  - `next_state` values are defined in `transitions`
   - Number of states is greater than one
   - Number of outputs is greater than zero
   - `initial_state` is defined in `transitions`
+  - Output assignments in Moore/Mealy forms reference known output names
+  - Duplicate state names are rejected
+  - Duplicate signal names are rejected
 
 
 TODO/Next Steps

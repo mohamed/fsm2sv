@@ -39,6 +39,7 @@ jobs:
       with:
         files: |
           fsm2sv
+          fsm2sv_schema.yml
           LICENSE
           README.md
           examples.zip

@@ -1,0 +1,127 @@
+---
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://example.com/fsm2sv.schema.yml
+title: fsm2sv YAML Schema
+description: Structural schema for FSM YAML files consumed by fsm2sv.
+type: object
+additionalProperties: false
+required:
+  - version
+  - name
+  - reset
+  - inputs
+  - outputs
+  - transitions
+  - initial_state
+properties:
+  version:
+    type: string
+    const: "1.0"
+
+  name:
+    type: string
+    minLength: 1
+
+  reset:
+    type: object
+    additionalProperties: false
+    properties:
+      asynchronous:
+        type: boolean
+      active_low:
+        type: boolean
+
+  inputs:
+    type: array
+    items:
+      $ref: "#/$defs/inputPort"
+
+  outputs:
+    type: array
+    minItems: 1
+    items:
+      $ref: "#/$defs/outputPort"
+
+  transitions:
+    type: array
+    minItems: 1
+    items:
+      $ref: "#/$defs/stateEntry"
+
+  initial_state:
+    type: string
+    minLength: 1
+
+  encoding:
+    type: string
+    default: onehot
+    enum:
+      - onehot
+      - counter
+
+$defs:
+  signalName:
+    type: string
+    minLength: 1
+
+  inputPort:
+    type: object
+    minProperties: 1
+    maxProperties: 1
+    propertyNames:
+      $ref: "#/$defs/signalName"
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - width
+      properties:
+        width:
+          type: integer
+          minimum: 1
+
+  outputPort:
+    type: object
+    minProperties: 1
+    maxProperties: 1
+    propertyNames:
+      $ref: "#/$defs/signalName"
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required:
+        - width
+        - reg
+      properties:
+        width:
+          type: integer
+          minimum: 1
+        reg:
+          type: boolean
+
+  transitionLine:
+    type: string
+    anyOf:
+      - pattern: "^\\s*\\(.+\\)\\s*,\\s*[^(),<>][^,<>]*\\s*$"
+      - pattern: "^\\s*\\(.+\\)\\s*,\\s*[^(),<>][^,<>]*\\s*,\\s*<.+>\\s*$"
+      - pattern: "^\\s*<.+>\\s*$"
+      - pattern: "^\\s*[^(),<>][^,<>]*\\s*$"
+
+  stateEntry:
+    type: object
+    minProperties: 1
+    maxProperties: 1
+    propertyNames:
+      $ref: "#/$defs/signalName"
+    additionalProperties:
+      type: array
+      minItems: 1
+      items:
+        $ref: "#/$defs/transitionLine"
+
+x-semantic-constraints:
+  - At least two states must be defined in transitions.
+  - Exactly zero or one direct transition (plain next_state form) is allowed per state.
+  - Moore and Mealy output assignment lines must use known output names.
+  - Every transition destination state must be a state defined in transitions.
+  - initial_state must be a state defined in transitions.

@@ -17,9 +17,173 @@ import io
 import sys
 import math
 import argparse
+from pathlib import Path
+
 import yaml
+from jsonschema import Draft202012Validator
 
 INOUT_CHARS = ['(', ')', '<', '>']
+
+
+class FSMValidationError(ValueError):
+    """Raised when FSM YAML validation fails."""
+
+
+class FSMValidator:
+    """Centralized Draft 2020-12 and semantic validation for FSM YAML inputs."""
+
+    @staticmethod
+    def format_path(parts):
+        out = "fsm"
+        for part in parts:
+            out += f"[{part}]" if isinstance(part, int) else f".{part}"
+        return out
+
+    @classmethod
+    def schema_errors(cls, fsm, schema):
+        if not isinstance(schema, dict):
+            return ["schema: expected mapping at root"]
+
+        try:
+            Draft202012Validator.check_schema(schema)
+        except Exception as exc:  # jsonschema.exceptions.SchemaError
+            return [f"schema: invalid Draft 2020-12 schema: {exc}"]
+
+        validator = Draft202012Validator(schema)
+        return [
+            f"{cls.format_path(list(err.path))}: {err.message}"
+            for err in sorted(validator.iter_errors(fsm), key=lambda e: list(e.path))
+        ]
+
+    @staticmethod
+    def port_names(items, section, errors):
+        names = set()
+        if not isinstance(items, list):
+            return names
+
+        for idx, entry in enumerate(items):
+            if not isinstance(entry, dict) or len(entry) != 1:
+                continue
+            name = next(iter(entry.keys()))
+            if name in names:
+                errors.append(f"{section}[{idx}]: Duplicate signal name '{name}'")
+            else:
+                names.add(name)
+        return names
+
+    @staticmethod
+    def check_output_assignment_list(text, output_names, path, errors):
+        if not (text.startswith("<") and text.endswith(">")):
+            errors.append(f"{path}: Output assignment must be enclosed in '<' and '>'")
+            return
+
+        stmts = [s.strip() for s in text[1:-1].split(";") if s.strip()]
+        if not stmts:
+            errors.append(f"{path}: Expected at least one output assignment")
+            return
+
+        for stmt in stmts:
+            lhs_rhs = [s.strip() for s in stmt.split("=")]
+            if len(lhs_rhs) != 2:
+                errors.append(f"{path}: Malformed assignment '{stmt}', expected 'name = expr'")
+                continue
+            lhs, rhs = lhs_rhs
+            if lhs not in output_names:
+                errors.append(f"{path}: Unknown output '{lhs}' in assignment")
+            if not rhs:
+                errors.append(f"{path}: Missing RHS expression for output '{lhs}'")
+
+    @classmethod
+    def semantic_errors(cls, fsm):
+        if not isinstance(fsm, dict):
+            return []
+
+        errors = []
+        output_names = cls.port_names(fsm.get("outputs"), "outputs", errors)
+        input_names = cls.port_names(fsm.get("inputs"), "inputs", errors)
+
+        overlap = sorted(output_names.intersection(input_names))
+        if overlap:
+            errors.append(f"signals: Names overlap between inputs and outputs: {', '.join(overlap)}")
+
+        transitions = fsm.get("transitions")
+        states = set()
+        dst_states = []
+
+        if isinstance(transitions, list):
+            for sidx, state_entry in enumerate(transitions):
+                if not isinstance(state_entry, dict) or len(state_entry) != 1:
+                    continue
+
+                state_name, lines = next(iter(state_entry.items()))
+                if state_name in states:
+                    errors.append(f"transitions[{sidx}]: Duplicate state definition '{state_name}'")
+                states.add(state_name)
+
+                if not isinstance(lines, list):
+                    continue
+
+                has_direct_arc = False
+                for lidx, line in enumerate(lines):
+                    lpath = f"transitions[{sidx}].{state_name}[{lidx}]"
+                    if not isinstance(line, str):
+                        continue
+
+                    elems = [part.strip() for part in line.split(",")]
+                    if not elems:
+                        continue
+
+                    if elems[0].startswith("("):
+                        if len(elems) >= 2 and elems[1]:
+                            if elems[1].startswith(tuple(INOUT_CHARS)):
+                                errors.append(f"{lpath}: Invalid next_state leading character")
+                            else:
+                                dst_states.append(elems[1])
+                        if len(elems) == 3:
+                            cls.check_output_assignment_list(elems[2], output_names, lpath, errors)
+                    elif elems[0].startswith("<"):
+                        cls.check_output_assignment_list(elems[0], output_names, lpath, errors)
+                    else:
+                        if has_direct_arc:
+                            errors.append(
+                                f"{lpath}: Only one direct next_state transition is allowed per state"
+                            )
+                            continue
+                        has_direct_arc = True
+                        if elems[0].startswith(tuple(INOUT_CHARS)):
+                            errors.append(f"{lpath}: Invalid next_state leading character")
+                        elif elems[0]:
+                            dst_states.append(elems[0])
+
+        if len(states) <= 1:
+            errors.append("transitions: At least two states must be defined")
+
+        for dst in dst_states:
+            if dst not in states:
+                errors.append(f"transitions: Destination state '{dst}' is not defined")
+
+        initial_state = fsm.get("initial_state")
+        if isinstance(initial_state, str) and initial_state not in states:
+            errors.append(f"initial_state: '{initial_state}' is not defined in transitions")
+
+        return errors
+
+    @classmethod
+    def validate_fsm_yaml(cls, fsm, schema):
+        return cls.schema_errors(fsm, schema) + cls.semantic_errors(fsm)
+
+    @staticmethod
+    def load_schema_or_exit():
+        schema_path = Path(__file__).resolve().with_name("fsm2sv_schema.yml")
+        try:
+            with open(schema_path, 'r', encoding='utf-8') as schema_file:
+                return yaml.safe_load(schema_file)
+        except FileNotFoundError as exc:
+            sys.exit(f"Error: schema file not found: {exc}")
+        except yaml.YAMLError as exc:
+            sys.exit(f"Error: failed to parse schema YAML: {exc}")
+        except IOError as exc:
+            sys.exit(f"Error: failed to read schema file: {exc}")
 
 
 class VerilogTBVisitor:
@@ -32,7 +196,8 @@ class VerilogTBVisitor:
     def visit_fsm(self, fsm):
         """Visit the FSM
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         dump("`timescale 1ns/1ps\n\n")
         dump(f"module {fsm.name}_tb;\n\n")
@@ -76,7 +241,8 @@ class VerilogTBVisitor:
     def generate_values(self, fsm):
         """Generate simulation random values
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("generate_values expects an FSM instance")
         dump = self.buf.write
         dump("  for (i = 0; i < 10000; i++) begin\n")
         for name, inp in fsm.inputs.items():
@@ -101,7 +267,8 @@ class SystemCTBVisitor:
     def get_port_type(self, width):     # pylint: disable=no-self-use
         """Calculate Verilator port width
         """
-        assert isinstance(width, int)
+        if not isinstance(width, int):
+            raise TypeError("Port width must be an integer")
         if width == 1:
             return "bool"
         if 1 < width <= 32:
@@ -113,7 +280,8 @@ class SystemCTBVisitor:
     def visit_fsm(self, fsm):
         """Visit the FSM
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
         dump("#include <systemc.h>\n")
@@ -168,7 +336,8 @@ class SystemCTBVisitor:
     def generate_values(self, fsm):
         """Generate simulation random values
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("generate_values expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
         dump(f"{tab()}std::random_device rd;\n")
@@ -199,7 +368,8 @@ class DotVisitor:   # pylint: disable=too-few-public-methods
         Args:
             fsm: The state machine object
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         dump(f"digraph {fsm.name} {{\n")
         dump("  edge[splines=\"curved\"];\n\n")
@@ -250,7 +420,8 @@ class SVVisitor:
         Args:
             fsm: The FSM object
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
         dump(f"{tab()}module {fsm.name} (\n")
@@ -315,8 +486,10 @@ class SVVisitor:
         """
         Visit states
         """
-        assert isinstance(states, dict)
-        assert len(states)
+        if not isinstance(states, dict):
+            raise TypeError("states must be a dictionary")
+        if not states:
+            raise ValueError("states cannot be empty")
         dump = self.buf.write
         tab = self.tab
         num_states = math.ceil(math.log(len(states), 2))
@@ -342,7 +515,8 @@ class SVVisitor:
         """
         Visit transitions
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_transitions expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
         dump(f"{tab()}always_comb begin\n")
@@ -376,7 +550,10 @@ class SVVisitor:
                         else:
                             dump(" else begin\n")
                             self.idx += 1
-                    assert trans.dst_state in fsm.states
+                    if trans.dst_state not in fsm.states:
+                        raise FSMValidationError(
+                            f"Transition destination '{trans.dst_state}' is undefined"
+                        )
                     dump(f"{tab()}state_d = {trans.dst_state};\n")
                     if trans.mealy_outputs:
                         for mealy, value in trans.mealy_outputs.items():
@@ -401,7 +578,8 @@ class SVVisitor:
     def visit_sva(self, fsm):
         """SystemVerilog Assertions
         """
-        assert isinstance(fsm, FSM)
+        if not isinstance(fsm, FSM):
+            raise TypeError("visit_sva expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
         dump(f"{tab()}default clocking\n")
@@ -418,8 +596,10 @@ class Port:   # pylint: disable=too-few-public-methods
     Base class for input/output ports
     """
     def __init__(self, name, width):
-        assert isinstance(name, str)
-        assert isinstance(width, int) and width > 0
+        if not isinstance(name, str):
+            raise TypeError("Port name must be a string")
+        if not isinstance(width, int) or width <= 0:
+            raise ValueError("Port width must be a positive integer")
         self.name = name
         self.width = width
 
@@ -441,7 +621,8 @@ class OutPort(Port):   # pylint: disable=too-few-public-methods
     """
     def __init__(self, name, width, reg):
         super().__init__(name, width)
-        assert reg is not None
+        if reg is None:
+            raise ValueError("Output field 'reg' must not be None")
         self.reg = reg
 
     def __repr__(self):
@@ -455,9 +636,12 @@ class State:   # pylint: disable=too-few-public-methods
     Stores the state name, encoding, and a dict holding Moore's outputs
     """
     def __init__(self, name, encoding, moore_outputs):
-        assert isinstance(name, str)
-        assert isinstance(encoding, int) and encoding >= 0
-        assert isinstance(moore_outputs, dict)
+        if not isinstance(name, str):
+            raise TypeError("State name must be a string")
+        if not isinstance(encoding, int) or encoding < 0:
+            raise ValueError("State encoding must be a non-negative integer")
+        if not isinstance(moore_outputs, dict):
+            raise TypeError("moore_outputs must be a dictionary")
         self.name = name
         self.encoding = encoding
         self.moore_outputs = moore_outputs
@@ -475,10 +659,14 @@ class Transition:
     the transition condition (if any), and a dict of Mealy outputs
     """
     def __init__(self, src_state, dst_state, condition, mealy_outputs):
-        assert isinstance(src_state, str)
-        assert isinstance(dst_state, str)
-        assert isinstance(condition, str) or condition is None
-        assert isinstance(mealy_outputs, dict)
+        if not isinstance(src_state, str):
+            raise TypeError("Transition source state must be a string")
+        if not isinstance(dst_state, str):
+            raise TypeError("Transition destination state must be a string")
+        if not (isinstance(condition, str) or condition is None):
+            raise TypeError("Transition condition must be a string or None")
+        if not isinstance(mealy_outputs, dict):
+            raise TypeError("Transition mealy_outputs must be a dictionary")
         self.src_state = src_state
         self.dst_state = dst_state
         self.condition = condition
@@ -515,7 +703,8 @@ class FSM:   # pylint: disable=too-many-instance-attributes
     SCHEMA_VERSION = "1.0"
 
     def __init__(self, fsm):
-        assert isinstance(fsm, dict)
+        if not isinstance(fsm, dict):
+            raise TypeError("FSM YAML root must be a mapping")
         if "version" not in fsm:
             raise ValueError("Missing required 'version' field in YAML schema")
         if str(fsm["version"]) != self.SCHEMA_VERSION:
@@ -534,17 +723,12 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         self.encoding = fsm.get("encoding", "onehot")
         self.handle_transitions(fsm.get("transitions", {}))
         self.set_state_encoding()
-        assert fsm["initial_state"] in self.states
         self.initial_state = fsm["initial_state"]
-        assert len(self.states) > 1
-        assert len(self.outputs) > 0
 
     def handle_rst(self, rst):
         """
         Parse reset section
         """
-        # Handle reset
-        assert rst is not None
         self.rst_async = rst.get("asynchronous", True)
         self.rst_active_low = rst.get("active_low", False)
 
@@ -578,25 +762,21 @@ class FSM:   # pylint: disable=too-many-instance-attributes
             elif self.encoding == "counter":
                 i = i + 1
             else:
-                raise Exception("invalid encoding method")
+                raise FSMValidationError("Invalid encoding method")
         for state_x, val_x in self.states.items():
             for state_y, val_y in self.states.items():
                 if state_x != state_y:
-                    assert val_x.encoding != val_y.encoding
+                    if val_x.encoding == val_y.encoding:
+                        raise FSMValidationError("State encodings must be unique")
 
     def parse_output_line(self, line):
         """
         Parse output lines
         """
-        assert isinstance(line, str)
-        assert line.startswith('<')
-        assert line.endswith('>')
         stmts = line.strip('<>').split(";")
         outputs = {}
         for stmt in stmts:
             outs = list(map(str.strip, stmt.split("=")))
-            assert len(outs) == 2
-            assert outs[0] in self.outputs
             outputs[outs[0]] = outs[1]
         return outputs
 
@@ -604,24 +784,17 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         """
         Parse state transitions
         """
-        assert transitions
         # We initialize the states here with incrementing enocdings
         # These enocdings will later be overwritten in set_state_encoding
         idx = 0
         for state in transitions:
             for key, value in state.items():
-                assert key not in self.states
                 moore_outs = {}
-                has_direct_arc = False
                 for trans in value:
                     elems = trans.split(',')
-                    assert 1 <= len(elems) <= 3
                     elems = list(map(str.strip, elems))
                     # Case 1: transition with (), STATE [, <>]
                     if elems[0].startswith('('):
-                        assert 2 <= len(elems) <= 3
-                        assert elems[0].endswith(')')
-                        assert not elems[1].startswith(tuple(INOUT_CHARS))
                         mealy = elems[2] if len(elems) == 3 else None
                         mealy_outs = {}
                         if mealy is not None:
@@ -630,14 +803,9 @@ class FSM:   # pylint: disable=too-many-instance-attributes
                         self.transitions.append(trans)
                     # Case 2: Moore's output: <>
                     elif elems[0].startswith('<'):
-                        assert len(elems) == 1
                         moore_outs = self.parse_output_line(elems[0])
                     # Case 3: transition with no input: just next state
                     else:
-                        assert not has_direct_arc
-                        has_direct_arc = True
-                        assert len(elems) == 1
-                        assert not elems[0].startswith(tuple(INOUT_CHARS))
                         trans = Transition(key, elems[0], None, {})
                         self.transitions.append(trans)
                 self.states[key] = State(key, idx, moore_outs)
@@ -652,9 +820,10 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         """
         Accept a visitor
         """
-        assert isinstance(visitor,
-                          (SVVisitor, DotVisitor,
-                           SystemCTBVisitor, VerilogTBVisitor))
+        if not isinstance(visitor,
+                  (SVVisitor, DotVisitor,
+                   SystemCTBVisitor, VerilogTBVisitor)):
+            raise TypeError("Unsupported visitor type")
         visitor.visit_fsm(self)
 
     def __repr__(self):
@@ -687,12 +856,17 @@ def main():
 
     if not args.o and not args.d and not args.t:
         sys.exit("Error: must specify at least -o, -d, or -t!")
-    if args.t:
-        assert len(args.t) == 2
+
+    schema_doc = FSMValidator.load_schema_or_exit()
 
     with open(args.i, 'r', encoding='utf-8') as stream:
         try:
             fsm_yml = yaml.safe_load(stream)
+            errors = FSMValidator.validate_fsm_yaml(fsm_yml, schema_doc)
+            if errors:
+                errmsg = "Validation failed:\n"
+                errmsg += "\n".join([f"  {idx}. {err}" for idx, err in enumerate(errors, start=1)])
+                raise FSMValidationError(errmsg)
             fsm = FSM(fsm_yml)
             if args.o:
                 visitor = SVVisitor()
@@ -709,16 +883,20 @@ def main():
             if args.t:
                 if args.t[0] == 'sc':
                     visitor = SystemCTBVisitor()
-                if args.t[0] == 'sv':
+                elif args.t[0] == 'sv':
                     visitor = VerilogTBVisitor()
+                else:
+                    raise ValueError("Testbench type must be 'sc' or 'sv'")
                 fsm.accept(visitor)
                 with open(args.t[1], 'w', encoding='utf-8') as tbf:
                     tbf.write(visitor.buf.getvalue())
                     visitor.buf.close()
         except yaml.YAMLError as exc:
-            sys.exit(exc)
+            sys.exit(str(exc))
+        except FSMValidationError as exc:
+            sys.exit(str(exc))
         except IOError as exc:
-            sys.exit(exc)
+            sys.exit(str(exc))
 
 
 if __name__ == "__main__":
