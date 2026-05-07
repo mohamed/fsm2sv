@@ -17,6 +17,7 @@ import io
 import sys
 import math
 import argparse
+from collections import deque
 from pathlib import Path
 
 import yaml
@@ -101,6 +102,10 @@ class FSMValidator:
         errors = []
         output_names = cls.port_names(fsm.get("outputs"), "outputs", errors)
         input_names = cls.port_names(fsm.get("inputs"), "inputs", errors)
+
+        encoding = fsm.get("encoding", "onehot")
+        if encoding not in {"onehot", "counter", "gray"}:
+            errors.append("encoding: must be one of onehot, counter, gray")
 
         overlap = sorted(output_names.intersection(input_names))
         if overlap:
@@ -246,113 +251,10 @@ class VerilogTBVisitor:
         dump = self.buf.write
         dump("  for (i = 0; i < 10000; i++) begin\n")
         for name, inp in fsm.inputs.items():
-            dump(f"    {name} = $mti_random % {(2 ** inp.width)};\n")
+            dump(f"    /* verilator lint_off WIDTHTRUNC */\n")
+            dump(f"    {name} = $random % {(2 ** inp.width)};\n")
         dump("    #(PERIOD);\n")
         dump("  end\n")
-
-
-class SystemCTBVisitor:
-    """
-    Generates Verilator SystemC testbench
-    """
-    def __init__(self):
-        self.buf = io.StringIO()
-        self.idx = 0
-
-    def tab(self):
-        """prints variable indentation
-        """
-        return "    " * self.idx
-
-    def get_port_type(self, width):     # pylint: disable=no-self-use
-        """Calculate Verilator port width
-        """
-        if not isinstance(width, int):
-            raise TypeError("Port width must be an integer")
-        if width == 1:
-            return "bool"
-        if 1 < width <= 32:
-            return "uint32_t"
-        if 32 < width <= 64:
-            return "uint64_t"
-        return "sc_bv<" + str(width) + ">"
-
-    def visit_fsm(self, fsm):
-        """Visit the FSM
-        """
-        if not isinstance(fsm, FSM):
-            raise TypeError("visit_fsm expects an FSM instance")
-        dump = self.buf.write
-        tab = self.tab
-        dump("#include <systemc.h>\n")
-        dump("#include <random>\n\n")
-        dump(f'#include "V{fsm.name}.h"\n')
-        dump('#include "verilated.h"\n')
-        dump('#include "verilated_vcd_sc.h"\n\n')
-        dump("int sc_main(int argc, char ** argv) {\n")
-        self.idx += 1
-        dump(f"{tab()}sc_time STEP(1, SC_NS);\n")
-        dump(f"{tab()}Verilated::commandArgs(argc, argv);\n")
-        dump(f'{tab()}V{fsm.name}* dut = new V{fsm.name}("dut");\n')
-        dump(f"{tab()}Verilated::traceEverOn(true);\n")
-        dump(f"{tab()}VerilatedVcdSc* tfp = new VerilatedVcdSc;\n")
-        dump(f"{tab()}dut->trace(tfp, 99);\n")
-        dump(f'{tab()}tfp->open("{fsm.name}.vcd");\n\n')
-        dump(f'{tab()}sc_clock clk("clk_i", STEP);\n')
-        rst = "rst_ni" if fsm.rst_active_low else "rst_i"
-        dump(f'{tab()}sc_signal<bool> rst("{rst}");\n\n')
-        dump(f"{tab()}// inputs\n")
-        for name, inp in fsm.inputs.items():
-            port_type = self.get_port_type(inp.width)
-            dump(f'{tab()}sc_signal<{port_type}> {name}("{name}");\n')
-        dump("\n")
-        dump(f"{tab()}// outputs\n")
-        for name, out in fsm.outputs.items():
-            port_type = self.get_port_type(out.width)
-            dump(f'{tab()}sc_signal<{port_type}> {name}("{name}");\n')
-        dump("\n")
-        dump(f"{tab()}dut->clk_i(clk);\n")
-        dump(f"{tab()}dut->{rst}(rst);\n")
-        for name, inp in fsm.inputs.items():
-            dump(f"{tab()}dut->{name}({name});\n")
-        for name, out in fsm.outputs.items():
-            dump(f"{tab()}dut->{name}({name});\n")
-        dump("\n")
-        rst_val = 0 if fsm.rst_active_low else 1
-        dump(f"{tab()}rst = {rst_val}; sc_start(2 * STEP);\n")
-        rst_val = rst_val ^ 1
-        dump(f"{tab()}rst = {rst_val}; sc_start(STEP);\n\n")
-
-        self.generate_values(fsm)
-        dump(f'{tab()}printf("Simulation finished...");\n')
-        dump(f"{tab()}sc_stop();\n")
-        dump(f"{tab()}tfp->close();\n")
-        dump(f"{tab()}delete tfp;\n")
-        dump(f"{tab()}delete dut;\n\n")
-        dump(f"{tab()}return EXIT_SUCCESS;\n")
-        self.idx -= 1
-        dump("}\n")
-
-    def generate_values(self, fsm):
-        """Generate simulation random values
-        """
-        if not isinstance(fsm, FSM):
-            raise TypeError("generate_values expects an FSM instance")
-        dump = self.buf.write
-        tab = self.tab
-        dump(f"{tab()}std::random_device rd;\n")
-        dump(f"{tab()}std::mt19937 gen(rd());\n")
-        dump(f"{tab()}using uid = std::uniform_int_distribution<>;\n")
-        for name, inp in fsm.inputs.items():
-            dump(f"{tab()}uid distr_{name}(0, {(2 ** inp.width) - 1});\n")
-        dump("\n")
-        dump(f"{tab()}for (int i = 0; i < 1000; i++) {{\n")
-        self.idx += 1
-        for name, inp in fsm.inputs.items():
-            dump(f"{tab()}{name} = distr_{name}(gen);\n")
-        dump(f"{tab()}sc_start(STEP);\n")
-        self.idx -= 1
-        dump(f"{tab()}}}\n\n")
 
 
 class DotVisitor:   # pylint: disable=too-few-public-methods
@@ -424,6 +326,7 @@ class SVVisitor:
             raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
+        dump(f"`timescale 1ns/1ps\n\n")
         dump(f"{tab()}module {fsm.name} (\n")
         self.idx += 1
         dump(f"{tab()}// inputs\n")
@@ -456,10 +359,6 @@ class SVVisitor:
         else:
             dump(f", {rst_edge} {rst}) begin\n")
         self.idx += 1
-        dump("`ifdef FORMAL\n")
-        dump(f"{tab()}// SV assertions\n")
-        self.visit_sva(fsm)
-        dump("`endif  // FORMAL\n")
         reset_op = "!" if fsm.rst_active_low else ""
         dump(f"{tab()}if ({reset_op}{rst}) begin\n")
         self.idx += 1
@@ -470,6 +369,10 @@ class SVVisitor:
         self.idx -= 1
         dump(f"{tab()}end else begin\n")
         self.idx += 1
+        dump("`ifdef FORMAL\n")
+        dump(f"{tab()}// SV assertions\n")
+        self.visit_sva(fsm)
+        dump("`endif  // FORMAL\n")
         dump(f"{tab()}state_q <= state_d;\n")
         for outp, port_val in fsm.outputs.items():
             if port_val.reg:
@@ -493,7 +396,10 @@ class SVVisitor:
         dump = self.buf.write
         tab = self.tab
         num_states = math.ceil(math.log(len(states), 2))
-        num_states = num_states if encoding == "counter" else len(states)
+        if encoding == "onehot":
+            num_states = len(states)
+        else:
+            num_states = max(1, num_states)
         dump("\n")
         dump("`ifdef USE_ENUM_STATE\n")
         dump(f"{tab()}typedef enum logic [{num_states-1}:0] {{\n")
@@ -582,13 +488,33 @@ class SVVisitor:
             raise TypeError("visit_sva expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
-        dump(f"{tab()}default clocking\n")
-        self.idx += 1
-        dump(f"{tab()}formal_clock @(posedge clk_i);\n")
-        self.idx -= 1
-        dump(f"{tab()}endclocking\n")
-        rst = "!rst_ni" if fsm.rst_active_low else "rst_i"
-        dump(f"{tab()}default disable iff ({rst});\n")
+
+        # Mutual exclusion assertion (always applicable)
+        if fsm.encoding == "onehot":
+            dump(
+                f"{tab()}assert ($onehot(state_q)) "
+                "else $error(\"state_q is not onehot-legal\");\n"
+            )
+        else:
+            states = ", ".join(fsm.state_set)
+            dump(
+                f"{tab()}assert (state_q inside {{{states}}}) "
+                "else $error(\"state_q is not a legal encoded state\");\n"
+            )
+
+        # Reachability assertions (only if unreachable states exist)
+        for state in fsm.unreachable_states:
+            dump(
+                f"{tab()}assert (state_q != {state}) "
+                "else $error(\"Reached statically unreachable state\");\n"
+            )
+
+        # Liveness assertions (only if guaranteed-exit states exist)
+        for state in fsm.guaranteed_exit_states:
+            dump(
+                f"{tab()}assert (!(state_q == {state} && state_d == {state})) "
+                f"else $error(\"No progress from guaranteed-exit state {state}\");\n"
+            )
 
 
 class Port:   # pylint: disable=too-few-public-methods
@@ -724,6 +650,7 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         self.handle_transitions(fsm.get("transitions", {}))
         self.set_state_encoding()
         self.initial_state = fsm["initial_state"]
+        self.build_analysis_data()
 
     def handle_rst(self, rst):
         """
@@ -750,24 +677,62 @@ class FSM:   # pylint: disable=too-many-instance-attributes
                 port = OutPort(key, val["width"], val["reg"])
                 self.outputs[key] = port
 
+    def _encoding_value(self, idx):
+        """
+        Return integer encoding value according to selected strategy.
+        """
+        if self.encoding == "onehot":
+            return 1 << idx
+        if self.encoding == "counter":
+            return idx
+        if self.encoding == "gray":
+            return idx ^ (idx >> 1)
+        raise FSMValidationError("Invalid encoding method")
+
     def set_state_encoding(self):
         """
         Set the encoding for each state
         """
-        i = 0 if self.encoding == "counter" else 1
-        for _, value in self.states.items():
-            value.encoding = i
-            if self.encoding == "onehot":
-                i = i << 1
-            elif self.encoding == "counter":
-                i = i + 1
-            else:
-                raise FSMValidationError("Invalid encoding method")
+        for idx, (_, value) in enumerate(self.states.items()):
+            value.encoding = self._encoding_value(idx)
         for state_x, val_x in self.states.items():
             for state_y, val_y in self.states.items():
-                if state_x != state_y:
-                    if val_x.encoding == val_y.encoding:
-                        raise FSMValidationError("State encodings must be unique")
+                if state_x != state_y and val_x.encoding == val_y.encoding:
+                    raise FSMValidationError("State encodings must be unique")
+
+    def build_analysis_data(self):
+        """
+        Build reusable graph and encoding analysis data.
+        """
+        self.state_set = list(self.states.keys())
+        self.state_encoding_map = {
+            state: self.states[state].encoding for state in self.state_set
+        }
+        self.transition_graph = {state: [] for state in self.state_set}
+        for trans in self.transitions:
+            self.transition_graph.setdefault(trans.src_state, []).append(trans.dst_state)
+
+        self.reachable_states = set()
+        pending = deque([self.initial_state])
+        while pending:
+            state = pending.popleft()
+            if state in self.reachable_states:
+                continue
+            self.reachable_states.add(state)
+            for dst in self.transition_graph.get(state, []):
+                if dst not in self.reachable_states:
+                    pending.append(dst)
+
+        self.unreachable_states = [
+            state for state in self.state_set if state not in self.reachable_states
+        ]
+
+        self.guaranteed_exit_states = []
+        for state in self.state_set:
+            out_states = self.transition_graph.get(state, [])
+            if out_states and all(dst != state for dst in out_states):
+                self.guaranteed_exit_states.append(state)
+
 
     def parse_output_line(self, line):
         """
@@ -788,12 +753,13 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         # These enocdings will later be overwritten in set_state_encoding
         idx = 0
         for state in transitions:
-            for key, value in state.items():
+            for key, edges in state.items():
                 moore_outs = {}
-                for trans in value:
-                    elems = trans.split(',')
+                unconditional_next_state_set = False
+                for edge in edges:
+                    elems = edge.split(',')
                     elems = list(map(str.strip, elems))
-                    # Case 1: transition with (), STATE [, <>]
+                    # Case 1: transition with a condition: (), STATE [, <>]
                     if elems[0].startswith('('):
                         mealy = elems[2] if len(elems) == 3 else None
                         mealy_outs = {}
@@ -804,10 +770,15 @@ class FSM:   # pylint: disable=too-many-instance-attributes
                     # Case 2: Moore's output: <>
                     elif elems[0].startswith('<'):
                         moore_outs = self.parse_output_line(elems[0])
-                    # Case 3: transition with no input: just next state
+                    # Case 3: transition with no condition: just next state
                     else:
                         trans = Transition(key, elems[0], None, {})
                         self.transitions.append(trans)
+                        unconditional_next_state_set = True
+                if not unconditional_next_state_set:
+                    # if no unconditional next state is set for this state, we add a self-loop
+                    trans = Transition(key, key, None, {})
+                    self.transitions.append(trans)
                 self.states[key] = State(key, idx, moore_outs)
             idx += 1
         # We store the transitions based on their conditions to ensure
@@ -821,8 +792,9 @@ class FSM:   # pylint: disable=too-many-instance-attributes
         Accept a visitor
         """
         if not isinstance(visitor,
-                  (SVVisitor, DotVisitor,
-                   SystemCTBVisitor, VerilogTBVisitor)):
+                  (SVVisitor,
+                   DotVisitor,
+                   VerilogTBVisitor)):
             raise TypeError("Unsupported visitor type")
         visitor.visit_fsm(self)
 
@@ -848,8 +820,8 @@ def main():
                         help="Generate SystemVerilog implementation")
     parser.add_argument("-d", metavar="fsm.dot", type=str,
                         help="Generate Graphviz dot file")
-    parser.add_argument("-t", nargs=2, type=str, metavar=('type', 'outfile'),
-                        help="Generate testbench. type is 'sc' or 'sv'")
+    parser.add_argument("-t", metavar='tb.v', type=str,
+                        help="Generate Verilog testbench")
     parser.add_argument('--version', action='version',
                         version='%(prog)s ' + __version__)
     args = parser.parse_args()
@@ -881,14 +853,9 @@ def main():
                     dotf.write(visitor.buf.getvalue())
                     visitor.buf.close()
             if args.t:
-                if args.t[0] == 'sc':
-                    visitor = SystemCTBVisitor()
-                elif args.t[0] == 'sv':
-                    visitor = VerilogTBVisitor()
-                else:
-                    raise ValueError("Testbench type must be 'sc' or 'sv'")
+                visitor = VerilogTBVisitor()
                 fsm.accept(visitor)
-                with open(args.t[1], 'w', encoding='utf-8') as tbf:
+                with open(args.t, 'w', encoding='utf-8') as tbf:
                     tbf.write(visitor.buf.getvalue())
                     visitor.buf.close()
         except yaml.YAMLError as exc:

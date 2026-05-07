@@ -1,0 +1,34 @@
+---
+version: "1.0"
+name: example6
+reset:
+  asynchronous: true
+  active_low: true
+inputs:
+  - req:
+      width: 1
+  - mode:
+      width: 2
+outputs:
+  - gnt:
+      width: 1
+      reg: false
+  - code:
+      width: 2
+      reg: true
+transitions:
+  - S_IDLE:
+    - (req), S_BUSY, <gnt = 1'b1>
+    - S_IDLE
+    - <code = 2'b00>
+  - S_BUSY:
+    - (mode == 2'b00), S_WAIT, <gnt = 1'b1>
+    - (mode == 2'b11), S_IDLE
+    - S_BUSY
+    - <code = 2'b01>
+  - S_WAIT:
+    - (mode[0]), S_IDLE
+    - S_BUSY
+    - <code = 2'b10>
+initial_state: S_IDLE
+encoding: gray

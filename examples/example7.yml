@@ -1,0 +1,26 @@
+---
+version: "1.0"
+name: example7
+reset:
+  asynchronous: false
+  active_low: false
+inputs:
+  - trigger:
+      width: 1
+outputs:
+  - done:
+      width: 1
+      reg: false
+transitions:
+  - S0:
+    - (trigger), S1
+    - S0
+    - <done = 1'b0>
+  - S1:
+    - S0
+    - <done = 1'b1>
+  - S_DEAD:
+    - S_DEAD
+    - <done = 1'b0>
+initial_state: S0
+encoding: counter

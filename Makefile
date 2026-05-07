@@ -2,11 +2,9 @@ EXAMPLES_DIR   = examples
 YML_SRCS       = $(wildcard $(EXAMPLES_DIR)/*.yml)
 SV_OUTS        = $(patsubst %.yml,%.sv,$(YML_SRCS))
 DOT_OUTS       = $(patsubst %.yml,%.dot,$(YML_SRCS))
-SCTB_OUTS      = $(patsubst %.yml,%_tb.cc,$(YML_SRCS))
 SVTB_OUTS      = $(patsubst %.yml,%_tb.v,$(YML_SRCS))
 
-BIN_OUTS       = $(subst .yml,,$(subst $(EXAMPLES_DIR)/,obj_dir/V,$(YML_SRCS)))
-SIMV_OUTS      = $(subst .yml,_simv,$(YML_SRCS))
+SIM_OUTS       = $(subst .yml,,$(subst $(EXAMPLES_DIR)/,obj_dir/V,$(YML_SRCS)))
 
 CALC_SIZE      = $(shell find $(1) -exec du -bc {} + | grep total$ | cut -f1)
 YML_SIZE       = $(call CALC_SIZE,$(YML_SRCS))
@@ -17,34 +15,25 @@ FSM2SV         = $(ROOT_DIR)/fsm2sv
 
 VERILATOR      = verilator
 LINT_ARGS      = -Wall --lint-only
-TESTBENCH_ARGS = -Wall --sc --exe --trace -O3 -build --clk clk
+SIM_ARGS       = --assert --timing --binary --trace -O3 -DFORMAL
 
-IVERILOG       = iverilog
-IVERILOG_ARGS  = -g2012 -Wall
 
-PDF_OPTS := --pdf-engine=typst
+PDF_OPTS       := --pdf-engine=typst
 
-.PHONY: clean all flake pylint sizes test-sv test-sc docs setup
+.PHONY: clean all flake pylint sizes sim docs setup
 
-all: $(SV_OUTS) $(DOT_OUTS) $(SVTB_OUTS) $(SCTB_OUTS)
+all: $(SV_OUTS) $(DOT_OUTS) $(SVTB_OUTS)
 
 setup:
 	uv sync --extra dev
 
-test-sv: $(SIMV_OUTS)
+sim: $(SIM_OUTS) $(SVTB_OUTS)
 
-test-sc: $(BIN_OUTS)
-
-obj_dir/V%: $(EXAMPLES_DIR)/%_tb.cc $(EXAMPLES_DIR)/%.sv
-	$(VERILATOR) $(TESTBENCH_ARGS) $^
+obj_dir/V%: $(EXAMPLES_DIR)/%.sv $(EXAMPLES_DIR)/%_tb.v
+	$(VERILATOR) $(SIM_ARGS) $^
 	cd obj_dir && ./V$*
 
-%_simv: %.sv %_tb.v
-	$(IVERILOG) $(IVERILOG_ARGS) -o $@ $^
-	cd $(EXAMPLES_DIR) && ../$*_simv
-
 # Generate the SV FSM and validate it with verilator linter
-# To use another linter, just change $(LINT) and $(LINT_ARGS) above
 %.sv : %.yml
 	uv run $(FSM2SV) -i $< -o $@
 	$(VERILATOR) $(LINT_ARGS) $@
@@ -54,11 +43,8 @@ obj_dir/V%: $(EXAMPLES_DIR)/%_tb.cc $(EXAMPLES_DIR)/%.sv
 	uv run $(FSM2SV) -i $< -d $@
 	dot -Tdot $@ > /dev/null
 
-%_tb.cc : %.yml
-	uv run $(FSM2SV) -i $< -t sc $@
-
 %_tb.v : %.yml
-	uv run $(FSM2SV) -i $< -t sv $@
+	uv run $(FSM2SV) -i $< -t $@
 
 flake: $(FSM2SV)
 	uv run flake8 $<
@@ -78,7 +64,6 @@ sizes:
 clean:
 	$(RM) $(SV_OUTS)
 	$(RM) $(DOT_OUTS)
-	$(RM) $(SCTB_OUTS)
 	$(RM) $(SVTB_OUTS)
-	$(RM) $(SIMV_OUTS)
+	$(RM) $(SIM_OUTS)
 	$(RM) -r obj_dir

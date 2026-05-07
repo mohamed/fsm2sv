@@ -11,9 +11,7 @@ implementation, it can also generate:
 
   - A **visualization** of the FSM using [Graphviz dot](https://graphviz.org/)
     format.
-  - A **Verilog testbench** for simulation with [Icarus verilog](https://github.com/steveicarus/iverilog)
-  - A **SystemC testbench** using [Verilator](https://verilator.org/)
-    to test the generated FSM.
+  - A **Verilog testbench** for simulation with [Verilator](https://verilator.org/)
 
 The YAML description aims to:
 
@@ -31,7 +29,7 @@ The YAML description aims to:
 Requirements
 ------------
 
-`fsm2sv` is written using Python 3. It is tested using Python 3.8 and 3.10.
+`fsm2sv` is written using Python 3. It is tested using Python 3.8, 3.10, and 3.13.
 Python dependencies (`pyyaml`, `jsonschema`, `flake8`, `pylint`) are managed via
 [uv](https://github.com/astral-sh/uv). Once `uv` is installed, bootstrap the
 environment with:
@@ -46,14 +44,8 @@ packages. No global Python package installation is needed.
 In addition to Python, the following tools are needed:
 
   - [uv](https://github.com/astral-sh/uv): Used to manage Python dependencies.
-  - [Verilator](https://verilator.org/): Used to perform linter checks.
-    Tested with version 4.214
-  - [Icarus Verilog](https://github.com/steveicarus/iverilog): Used to simulate
-    the generated Verilog testbench. Tested with version 11.0.
-  - [SystemC](https://accellera.org/downloads/standards/systemc): Used to run
-    the SystemC testbench of the verilated model. Tested with version 2.3.3.
-  - [Graphviz dot](https://graphviz.org/): Used to generate the FSM
-    visualization
+  - [Verilator](https://verilator.org/): Used to perform linter checks and run simulations. Tested with version 5.046
+  - [Graphviz dot](https://graphviz.org/): Used to generate the FSM visualization
   - [flake8](https://flake8.pycqa.org/en/latest/) and [pylint](https://pylint.org/):
     Used to lint `fsm2sv` sources. Installed automatically via `make setup`.
 
@@ -164,7 +156,7 @@ The scalars in the YAML specification are:
     It must contain a state name that is defined in the `transitions` map.
   - `encoding`: A string that defines the encoding scheme of the states.
     At the moment, it can be either
-    `counter` or `onehot`
+    `counter`, `onehot`, or `gray`
 
 
 Schema Validation
@@ -272,7 +264,7 @@ transitions:         # transitions map
     - BIDLE
     - (req), BBUSY
 initial_state: BIDLE  # Initial state
-encoding: onehot # or "counter"
+encoding: onehot # or "counter" or "gray"
 ```
 
 The complete YAML specification is available under `examples/example1.yml`.
@@ -315,7 +307,8 @@ module example1 (
 
   always_ff @(posedge clk_i, negedge rst_ni) begin
 `ifdef FORMAL
-    // TODO: Add SV assertions here
+    // Auto-generated formal assertions for state machine verification
+    assert ($onehot(state_q)) else $error("state_q is not onehot-legal");
 `endif  // FORMAL
     if (!rst_ni) begin
       state_q <= BIDLE;
@@ -390,6 +383,7 @@ Currently, the tool implements the following generation-time checks:
   - Number of outputs is greater than zero
   - `initial_state` is defined in `transitions`
   - Output assignments in Moore/Mealy forms reference known output names
+  - Encoding selection is validated (`onehot`, `counter`, `gray`)
   - Duplicate state names are rejected
   - Duplicate signal names are rejected
 
@@ -397,9 +391,8 @@ Currently, the tool implements the following generation-time checks:
 TODO/Next Steps
 ---------------
 
-  1. Add SV assertions
-  2. Parse the input/output statements to check input/output names and verify
-     that values match the ports' widths.
+  1. Expand liveness templates into stronger temporal properties.
+  2. Add optional user-provided fairness assumptions for formal runs.
 
 
 LICENSE

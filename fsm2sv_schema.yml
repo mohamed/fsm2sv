@@ -58,6 +58,7 @@ properties:
     enum:
       - onehot
       - counter
+      - gray
 
 $defs:
   signalName:
