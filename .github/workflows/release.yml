@@ -29,7 +29,7 @@ jobs:
       run: make pylint
 
     - name: Run tests
-      run: make setup test
+      run: make setup test sim
 
     - name: Generate PDF documentation
       run: make docs

@@ -12,17 +12,18 @@ implementation, it can also generate:
   - A **visualization** of the FSM using [Graphviz dot](https://graphviz.org/)
     format.
   - A **Verilog testbench** for simulation with [Verilator](https://verilator.org/)
+  - **SystemVerilog Assertions (SVA)** that perform formal verification of the FSM behavior
 
 The YAML description aims to:
 
   1. **Be compact and easy-to-read**: The user should be able to understand
   the FSM behavior from the YAML spec and modify it easily.
   On average, the YAML spec is ~3x smaller in size than the FSM
-  implementation.
+  implementation. It is up to 14x smaller when the auto-generated SVAs are taken into account.
   2. **Generate efficient RTL**: The SV code is generated acccording to
      best-practices and enables the user to choose between implementing the
-     FSM states using either *counter* or *onehot* encodings.
-     In addition, the code is generated to be free of warnings and pass linter
+     FSM states using: *counter*, *onehot*, or *gray* encodings.
+     In addition, the code is generated to be free of warnings and passes linter
      checks.
 
 
@@ -30,7 +31,7 @@ Requirements
 ------------
 
 `fsm2sv` is written using Python 3. It is tested using Python 3.8, 3.10, and 3.13.
-Python dependencies (`pyyaml`, `jsonschema`, `flake8`, `pylint`) are managed via
+Python dependencies (`pyyaml`, `jsonschema`, `ruff`) are managed via
 [uv](https://github.com/astral-sh/uv). Once `uv` is installed, bootstrap the
 environment with:
 
@@ -38,7 +39,7 @@ environment with:
   make setup
   ```
 
-This runs `uv sync --extra dev` and creates a local `.venv` with all required
+This runs `uv sync` and creates a local `.venv` with all required
 packages. No global Python package installation is needed.
 
 In addition to Python, the following tools are needed:
@@ -46,8 +47,7 @@ In addition to Python, the following tools are needed:
   - [uv](https://github.com/astral-sh/uv): Used to manage Python dependencies.
   - [Verilator](https://verilator.org/): Used to perform linter checks and run simulations. Tested with version 5.046
   - [Graphviz dot](https://graphviz.org/): Used to generate the FSM visualization
-  - [flake8](https://flake8.pycqa.org/en/latest/) and [pylint](https://pylint.org/):
-    Used to lint `fsm2sv` sources. Installed automatically via `make setup`.
+  - [ruff](https://github.com/astral-sh/ruff): Used to lint `fsm2sv`
 
 
 YAML Specification
@@ -127,6 +127,8 @@ The maps are:
     `if/else if/else` conditions.
     The `next_state` is the name of the next state of the FSM when the
     transition condition is true.
+    The order of the conditions is preserved in the RTL which means that if
+    multiple conditions are true, the one listed at the begining takes precedence.
     Finally, if `<mealy_outputs>` is present, then the angle brackets contain
     a semicolon separated list of output assignments that look as follows:
 
@@ -370,31 +372,104 @@ More examples are available under `examples`.
 Checks/Assertions
 -----------------
 
-The tool does two types of checks: (1) generation-time checks, and
-(2) simulation-time checks.
-The generation-time checks are done on the YAML specification, while the
-simulation-time checks are done on the generated SV code.
-Currently, the tool implements the following generation-time checks:
+The tool performs two types of checks: **generation-time YAML checks**
+(run when `fsm2sv` reads your specification) and **SVA formal assertions**
+(emitted into the generated SystemVerilog and activated by compiling with
+`` `define FORMAL ``).
+
+### Generation-time YAML checks
+
+These always run every time the tool is invoked. Any failure aborts
+generation with a descriptive error message.
 
   - Input YAML shape and types against `fsm2sv_schema.yml`
     (Draft 2020-12 JSON Schema)
   - `version` matches the supported schema version (`1.0`)
-  - Exactly zero or one direct transition (`next_state`) per state
-  - `next_state` values are defined in `transitions`
+  - Exactly zero or one direct (unconditional) transition per state
+  - All transition destination states are defined in `transitions`
   - Number of states is greater than one
   - Number of outputs is greater than zero
   - `initial_state` is defined in `transitions`
-  - Output assignments in Moore/Mealy forms reference known output names
-  - Encoding selection is validated (`onehot`, `counter`, `gray`)
+  - Output assignments in Moore and Mealy forms reference known output names
+  - Encoding selection is one of `onehot`, `counter`, or `gray`
   - Duplicate state names are rejected
-  - Duplicate signal names are rejected
+  - Duplicate signal (input/output) names are rejected
+
+### SVA formal assertions
+
+All assertions are guarded by `` `ifdef FORMAL `` so they have zero impact on
+synthesis. They are split into two groups by placement in the generated module.
+
+#### Combinational assertions (`always_comb` block)
+
+These are evaluated every time combinational logic re-evaluates. They are
+additionally gated by `if (rst_ni)` / `if (rst_i)` so they are inactive while
+reset is asserted.
+
+| Assertion | What it checks |
+|---|---|
+| **State encoding legality** | For one-hot encoding: `$onehot(state_q)`. For counter/gray encoding: `state_q inside {S0, S1, ...}`. Catches corrupted or X state registers. |
+| **Reachability** | `state_q != DEAD_STATE` for every state identified as statically unreachable from `initial_state`. Flags logic errors that managed to route into a dead state. |
+| **Liveness (local)** | `!(state_q == S && state_d == S)` for every state where all outgoing arcs leave the state (guaranteed-exit states). Ensures the FSM cannot stall in a state it should always leave. |
+| **Moore output invariants** | `!(state_q == S) \|\| (out == expected)` for every Moore output assignment in state S. Verifies the combinational output decode matches the YAML spec. |
+| **Transition legality** | `!(state_q == S) \|\| (state_d inside {legal_dsts})` for every state S. The legal destination set is derived directly from the YAML transitions, so any stray next-state assignment is caught immediately. |
+| **Transition correctness** | For each arc with effective guard G leading to destination D: `!(G) \|\| (state_d == D)`. Guard G encodes both the arc's own condition and the negation of all higher-priority conditions (matching the `if`/`else if`/`else` priority in RTL), so the assertion is structurally identical to the generated decision tree. |
+| **Mealy output correctness** | For each arc that carries Mealy outputs: `!(G) \|\| (out == expected)`. Fires if a guarded arc is taken but the output assignment deviates from the spec. |
+| **Overlap check** (opt-in) | For each pair of conditional guards $(c_i, c_j)$ from the same state: `!((state_q == S) && (c_i) && (c_j))`. Checks that no two raw conditions can be simultaneously true, catching ambiguity in the YAML even when priority would make RTL behaviour deterministic. Guarded by `` `ifdef ENABLE_OVERLAP_CHECK `` so it can be suppressed for FSMs that intentionally rely on priority. |
+| **Transition cover** | `cover (G && (state_d == D))` for every arc. Gives the formal tool a witness obligation: it must find a reachable execution that exercises each transition. Unused arcs are flagged automatically. |
+
+Example output for `example1` (one-hot, `BBUSY` state):
+
+```systemverilog
+`ifdef FORMAL
+  always_comb begin
+    if (rst_ni) begin
+      assert ($onehot(state_q)) else $error("state_q is not onehot-legal");
+      assert (!(state_q == BFREE && state_d == BFREE))
+        else $error("No progress from guaranteed-exit state BFREE");
+      assert (!(state_q == BBUSY) || (gnt == 1'b1))
+        else $error("Moore output mismatch in state BBUSY: gnt");
+      assert (!(state_q == BBUSY) || (state_d inside {BBUSY, BFREE, BWAIT}))
+        else $error("Illegal next-state from BBUSY");
+      `ifdef ENABLE_OVERLAP_CHECK
+        assert (!((state_q == BBUSY) && ((!dly && done)) && ((dly && done))))
+          else $error("Overlapping transition guards in state BBUSY");
+      `endif
+      assert (!((state_q == BBUSY) && ((!dly && done))) || (state_d == BFREE))
+        else $error("Transition mismatch: BBUSY -> BFREE");
+      cover ((state_q == BBUSY) && ((!dly && done)) && (state_d == BFREE));
+      // ... remaining arcs ...
+    end
+  end
+```
+
+#### Concurrent (temporal) properties
+
+These are module-level `assert property` statements clocked on `posedge clk_i`.
+They verify behaviour across clock boundaries and are disabled during reset via
+`disable iff`.
+
+| Property | What it checks |
+|---|---|
+| **Sequential transition correctness** | `(G) \|=> (state_q == D)` for every arc with effective guard G to destination D. Verifies that the flip-flop actually captures the correct next state one cycle after the guard fires, catching mismatches between combinational and sequential paths. |
+| **Reset initialisation** | `(rst_asserted) \|=> (state_q == initial_state)`. Proves that asserting reset always drives the FSM to `initial_state` on the next rising edge, regardless of current state. |
+
+Example output:
+
+```systemverilog
+  assert property (@(posedge clk_i) disable iff (!rst_ni)
+    ((state_q == BBUSY) && ((!dly && done))) |=> (state_q == BFREE));
+  assert property (@(posedge clk_i) (!rst_ni) |=> (state_q == BIDLE));
+`endif  // FORMAL
+```
 
 
 TODO/Next Steps
 ---------------
 
-  1. Expand liveness templates into stronger temporal properties.
-  2. Add optional user-provided fairness assumptions for formal runs.
+  1. Add optional user-provided fairness `assume` properties for liveness proofs.
+  2. Emit bounded liveness templates (eventually-leave-within-N-cycles) for
+     states with conditional self-loops.
 
 
 LICENSE
