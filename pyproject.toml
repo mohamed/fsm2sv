@@ -6,10 +6,5 @@ requires-python = ">=3.8"
 dependencies = [
     "jsonschema>=4.0",
     "pyyaml",
-]
-
-[project.optional-dependencies]
-dev = [
-    "flake8",
-    "pylint",
+    "ruff>=0.15.12",
 ]

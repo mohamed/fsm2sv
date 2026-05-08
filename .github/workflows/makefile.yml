@@ -19,10 +19,13 @@ jobs:
 
     - name: Install dependencies
       run: |
-        sudo apt install verilator libsystemc-dev libsystemc iverilog graphviz
+        sudo apt install verilator graphviz
 
-    - name: Generate RTL
-      run: make setup all
+    - name: Python linting
+      run: make pylint
+
+    - name: Run tests
+      run: make setup test sim
 
     - name: Install pandoc and typst
       run: |

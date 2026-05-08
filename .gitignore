@@ -2,11 +2,10 @@ examples/*.sv
 examples/*.dot
 examples/*.cc
 examples/*.v
-examples/*_simv
 docs/*.pdf
 *.pyc
 *.vcd
 obj_dir
-.ccls-cache
 .venv
 uv.lock
+.ruff_cache

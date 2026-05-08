@@ -251,7 +251,7 @@ class VerilogTBVisitor:
         dump = self.buf.write
         dump("  for (i = 0; i < 10000; i++) begin\n")
         for name, inp in fsm.inputs.items():
-            dump(f"    /* verilator lint_off WIDTHTRUNC */\n")
+            dump("    /* verilator lint_off WIDTHTRUNC */\n")
             dump(f"    {name} = $random % {(2 ** inp.width)};\n")
         dump("    #(PERIOD);\n")
         dump("  end\n")
@@ -326,7 +326,7 @@ class SVVisitor:
             raise TypeError("visit_fsm expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
-        dump(f"`timescale 1ns/1ps\n\n")
+        dump("`timescale 1ns/1ps\n\n")
         dump(f"{tab()}module {fsm.name} (\n")
         self.idx += 1
         dump(f"{tab()}// inputs\n")
@@ -369,10 +369,6 @@ class SVVisitor:
         self.idx -= 1
         dump(f"{tab()}end else begin\n")
         self.idx += 1
-        dump("`ifdef FORMAL\n")
-        dump(f"{tab()}// SV assertions\n")
-        self.visit_sva(fsm)
-        dump("`endif  // FORMAL\n")
         dump(f"{tab()}state_q <= state_d;\n")
         for outp, port_val in fsm.outputs.items():
             if port_val.reg:
@@ -383,6 +379,11 @@ class SVVisitor:
         dump(f"{tab()}end\n")
         dump("\n")
         self.visit_transitions(fsm)
+        dump("\n")
+        dump("`ifdef FORMAL\n")
+        dump(f"{tab()}// SV assertions\n")
+        self.visit_sva(fsm)
+        dump("`endif  // FORMAL\n")
         dump("endmodule\n")
 
     def visit_states(self, states, encoding):
@@ -488,7 +489,14 @@ class SVVisitor:
             raise TypeError("visit_sva expects an FSM instance")
         dump = self.buf.write
         tab = self.tab
+        rst = "rst_ni" if fsm.rst_active_low else "rst_i"
+        rst_asserted = f"!{rst}" if fsm.rst_active_low else rst
+        rst_not_asserted = f"{rst}" if fsm.rst_active_low else rst
 
+        dump(f"{tab()}always_comb begin\n")
+        self.idx += 1
+        dump(f"{tab()}if ({rst_not_asserted}) begin\n")
+        self.idx += 1
         # Mutual exclusion assertion (always applicable)
         if fsm.encoding == "onehot":
             dump(
@@ -515,6 +523,72 @@ class SVVisitor:
                 f"{tab()}assert (!(state_q == {state} && state_d == {state})) "
                 f"else $error(\"No progress from guaranteed-exit state {state}\");\n"
             )
+
+        # Moore output invariants
+        for state in fsm.state_set:
+            for moore, value in fsm.states[state].moore_outputs.items():
+                dst = moore + "_d" if fsm.outputs[moore].reg else moore
+                dump(
+                    f"{tab()}assert (!(state_q == {state}) || ({dst} == {value})) "
+                    f"else $error(\"Moore output mismatch in state {state}: {dst}\");\n"
+                )
+
+        # Transition legality, Mealy checks, transition covers, and overlap checks
+        for state in fsm.state_set:
+            legal_dsts = sorted({trans.dst_state for trans in fsm.transitions_by_src[state]})
+            legal_set = ", ".join(legal_dsts)
+            dump(
+                f"{tab()}assert (!(state_q == {state}) || (state_d inside {{{legal_set}}})) "
+                f"else $error(\"Illegal next-state from {state}\");\n"
+            )
+
+            for idx_a, cond_a in enumerate(fsm.conditional_transition_conditions[state]):
+                if fsm.conditional_transition_conditions[state][idx_a+1:]:
+                    dump(f"{tab()}`ifdef ENABLE_OVERLAP_CHECK\n")
+                self.idx += 1
+                for cond_b in fsm.conditional_transition_conditions[state][idx_a+1:]:
+                    dump(
+                        f"{tab()}assert (!((state_q == {state}) && ({cond_a}) && ({cond_b}))) "
+                        f"else $error(\"Overlapping transition guards in state {state}\");\n"
+                    )
+                self.idx -= 1
+                if fsm.conditional_transition_conditions[state][idx_a+1:]:
+                    dump(f"{tab()}`endif\n")
+
+            for trans, guard in fsm.transition_guard_clauses[state]:
+                dump(
+                    f"{tab()}assert (!({guard}) || (state_d == {trans.dst_state})) "
+                    f"else $error(\"Transition mismatch: {state} -> {trans.dst_state}\");\n"
+                )
+                dump(f"{tab()}cover ({guard} && (state_d == {trans.dst_state}));\n")
+                for mealy, value in trans.mealy_outputs.items():
+                    dst = mealy + "_d" if fsm.outputs[mealy].reg else mealy
+                    dump(
+                        f"{tab()}assert (!({guard}) || ({dst} == {value})) "
+                        f"else $error(\"Mealy output mismatch on {state}->{trans.dst_state}: {dst}\");\n"
+                    )
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+        self.idx -= 1
+        dump(f"{tab()}end\n")
+
+        # Sequential transition correctness and reset/init helpers
+        for state in fsm.state_set:
+            for trans, guard in fsm.transition_guard_clauses[state]:
+                dump(
+                    f"{tab()}assert property (@(posedge clk_i) disable iff ({rst_asserted}) "
+                    f"({guard}) |=> (state_q == {trans.dst_state}));\n"
+                )
+
+        dump(
+            f"{tab()}assert property (@(posedge clk_i) ({rst_asserted}) "
+            f"|=> (state_q == {fsm.initial_state}));\n"
+        )
+#        dump(f"{tab()}initial begin\n")
+#        self.idx += 1
+#        dump(f"{tab()}assume ({rst_asserted});\n")
+#        self.idx -= 1
+#        dump(f"{tab()}end\n")
 
 
 class Port:   # pylint: disable=too-few-public-methods
@@ -732,6 +806,31 @@ class FSM:   # pylint: disable=too-many-instance-attributes
             out_states = self.transition_graph.get(state, [])
             if out_states and all(dst != state for dst in out_states):
                 self.guaranteed_exit_states.append(state)
+
+        self.transitions_by_src = {state: [] for state in self.state_set}
+        for trans in self.transitions:
+            self.transitions_by_src[trans.src_state].append(trans)
+
+        self.conditional_transition_conditions = {state: [] for state in self.state_set}
+        self.transition_guard_clauses = {state: [] for state in self.state_set}
+        for state in self.state_set:
+            prev_conditions = []
+            for trans in self.transitions_by_src[state]:
+                if trans.condition is not None:
+                    cond = trans.condition
+                    if prev_conditions:
+                        guard = f"(state_q == {state}) && ({cond})"
+                        for prev_cond in prev_conditions:
+                            guard += f" && !({prev_cond})"
+                    else:
+                        guard = f"(state_q == {state}) && ({cond})"
+                    prev_conditions.append(cond)
+                    self.conditional_transition_conditions[state].append(cond)
+                else:
+                    guard = f"(state_q == {state})"
+                    for prev_cond in prev_conditions:
+                        guard += f" && !({prev_cond})"
+                self.transition_guard_clauses[state].append((trans, guard))
 
 
     def parse_output_line(self, line):

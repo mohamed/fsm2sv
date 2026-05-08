@@ -20,14 +20,17 @@ SIM_ARGS       = --assert --timing --binary --trace -O3 -DFORMAL
 
 PDF_OPTS       := --pdf-engine=typst
 
-.PHONY: clean all flake pylint sizes sim docs setup
+.PHONY: clean test pylint sizes sim docs setup
 
-all: $(SV_OUTS) $(DOT_OUTS) $(SVTB_OUTS)
+test: $(SV_OUTS) $(DOT_OUTS) $(SVTB_OUTS)
+
+pylint: $(FSM2SV)
+	uv run ruff check $^
 
 setup:
-	uv sync --extra dev
+	uv sync
 
-sim: $(SIM_OUTS) $(SVTB_OUTS)
+sim: $(SIM_OUTS)
 
 obj_dir/V%: $(EXAMPLES_DIR)/%.sv $(EXAMPLES_DIR)/%_tb.v
 	$(VERILATOR) $(SIM_ARGS) $^
@@ -45,12 +48,6 @@ obj_dir/V%: $(EXAMPLES_DIR)/%.sv $(EXAMPLES_DIR)/%_tb.v
 
 %_tb.v : %.yml
 	uv run $(FSM2SV) -i $< -t $@
-
-flake: $(FSM2SV)
-	uv run flake8 $<
-
-pylint: $(FSM2SV)
-	uv run pylint $<
 
 docs: README.md
 	pandoc $< --from=markdown --to=typst --output - | typst compile - docs/fsm2sv.pdf

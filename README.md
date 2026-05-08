@@ -139,6 +139,8 @@ The maps are:
     In addition to input-triggered transitions, the FSM can move to
     another state in the next clock cycle. This can be done by specifying
     `next_state` without a trigger condition.
+    If the unconditional next state is omitted, the tool
+    will automatically insert a self-loop (i.e., remain in the same state).
     Finally, each state can define a list of Moore's outputs in a fashion
     similar to the Mealy's outputs:
 
