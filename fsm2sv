@@ -279,9 +279,8 @@ class DotVisitor:   # pylint: disable=too-few-public-methods
             label = f"{state}"
             moore = ""
             if value.moore_outputs:
-                moore += "\\n"
                 for out, val in value.moore_outputs.items():
-                    moore += f"{out}={val},"
+                    moore += f"\n{out}={val},"
             label += moore
             shape = "doublecircle" if state == fsm.initial_state else "circle"
             dump(f"  {state}[label=\"{label}\",shape={shape}];\n")
